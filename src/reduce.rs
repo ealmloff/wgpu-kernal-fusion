@@ -65,84 +65,35 @@ impl ReduceOperation {
     }
 
     fn tiled_map<const R: usize>(&self, blocksize: u32, inline: bool) -> String {
-        const {
-            assert!(R <= 3, "TensorLayout only supports up to 3 rank tensors");
-        }
-
         let dtype = &self.dtype;
-
         let mut kernal = String::new();
         TensorLayout::<R>::wgsl_type_definition(&mut kernal);
-        kernal.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
-        kernal.push_str(&format!(
-            "@group(0) @binding(1) var<storage, read_write> matrix: array<{dtype}>;\n"
-        ));
+        // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
+        // We can't query the warp size in WGSL, but we can use subgroup operations
+        // https://github.com/gpuweb/gpuweb/issues/4437 would unlock a better equivalent to warp synchronization
         kernal.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
         kernal.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
+        kernal.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
+        kernal.push_str(&format!(
+            "@group(0) @binding(1) var<storage, read> input_tensor: array<{dtype}>;\n"
+        ));
+        kernal.push_str(&format!(
+            "@group(0) @binding(2) var<storage, read_write> output_tensor: array<{dtype}>;\n"
+        ));
+        kernal.push_str(&format!(
+            "var<workgroup> workgroup_reduction_data: array<f32, BLOCKSIZE>;\n"
+        ));
         if !inline {
             for function in &self.functions {
                 kernal.push_str(&function.function(&self.dtype));
             }
         }
         kernal.push_str("\n@compute @workgroup_size(BLOCKSIZE)\n");
-        kernal.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {\n");
-        for i in 0..R {
-            let index = ["x", "y", "z"][i];
-            kernal.push_str(&format!(
-                "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE + tensor_layout.offset;\n"
-            ));
-        }
+        kernal.push_str("fn main(@builtin(workgroup_id) global_id: vec3<u32>, @builtin(local_invocation_id) local_id: vec3<u32>, @builtin(subgroup_size) subgroup_size: u32) {\n");
+        kernal.push_str("const thread_index = global_id.x;\n");
+        kernal.push_str("const doubled_index = global_id.x;\n");
         kernal.push_str("\n");
 
-        for i in 0..R {
-            for _ in 0..(i + 1) {
-                kernal.push('\t');
-            }
-            kernal.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
-        }
-
-        for i in 0..R {
-            for _ in 0..(R + 1) {
-                kernal.push('\t');
-            }
-            kernal.push_str(&format!(
-                "let merged_index_{i} = tile_index_{i} + local_index_{i};\n"
-            ));
-        }
-
-        for _ in 0..(R + 1) {
-            kernal.push('\t');
-        }
-
-        kernal.push_str("if ");
-        for i in 0..R {
-            kernal.push_str(&format!("merged_index_{i} < tensor_layout.shape_{i} && "));
-        }
-        kernal.push_str("true {\n");
-        for _ in 0..(R + 2) {
-            kernal.push('\t');
-        }
-        kernal.push_str(&format!("let index = "));
-        for i in 0..R {
-            kernal.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
-        }
-        kernal.push_str("0;\n");
-        for _ in 0..(R + 2) {
-            kernal.push('\t');
-        }
-        self.modify_element(inline, &mut kernal);
-
-        for _ in 0..(R + 1) {
-            kernal.push('\t');
-        }
-        kernal.push_str("}\n");
-
-        for i in (0..R).rev() {
-            for _ in 0..(i + 1) {
-                kernal.push('\t');
-            }
-            kernal.push_str("}\n");
-        }
 
         kernal.push_str("}\n");
 
