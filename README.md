@@ -9,3 +9,9 @@ TODO:
 - [ ] Reduce ops
 - [ ] Fuse Elementwise ops into Reduce ops
 - [ ] Dynamically apply fusion based on runtime throughput data
+
+## Resources
+
+- https://github.com/googlefonts/compute-shader-101
+- https://google.github.io/tour-of-wgsl/
+- https://www.w3.org/TR/WGSL/
