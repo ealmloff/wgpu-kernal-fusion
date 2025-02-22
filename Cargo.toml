@@ -30,3 +30,7 @@ harness = false
 [[bench]]
 name = "fused"
 harness = false
+
+[[bench]]
+name = "reduce"
+harness = false
