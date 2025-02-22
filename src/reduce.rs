@@ -2,24 +2,24 @@ use std::{cell::OnceCell, fmt::Display};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{tensor::DataType, Tensor};
+use crate::{layout::Layout, tensor::DataType, Tensor};
 
 #[derive(Clone)]
-pub(crate) struct ReduceTensorLayout<const R1: usize, const R2: usize> {
+pub(crate) struct ReduceTensorLayout<const R: usize> {
     pub(crate) data: Box<[u32]>,
 }
 
-impl<const R1: usize, const R2: usize> ReduceTensorLayout<R1, R2> {
-    pub(crate) fn for_tensors<D: DataType>(
-        input_tensor: &Tensor<R1, D>,
-        output_tensor: &Tensor<R2, D>,
+impl<const R: usize> ReduceTensorLayout<R> {
+    pub(crate) fn new<const R2: usize, D: DataType>(
+        dim: usize,
+        input_layout: &Layout<R2, D>,
+        output_layout: &Layout<R, D>,
     ) -> Self {
-        let input_layout = *input_tensor.layout();
-        let output_layout = *output_tensor.layout();
         let data = input_layout
             .strides()
             .iter()
-            .map(|x| *x as u32)
+            .enumerate()
+            .filter_map(|(i, x)| (i != dim).then(|| *x as u32))
             .chain(std::iter::once(input_layout.offset() as u32))
             .chain(output_layout.strides().iter().map(|x| *x as u32))
             .chain(std::iter::once(output_layout.offset() as u32))
@@ -31,15 +31,15 @@ impl<const R1: usize, const R2: usize> ReduceTensorLayout<R1, R2> {
 
     pub(crate) fn wgsl_type_definition(kernel: &mut String) {
         kernel.push_str("struct ReduceTensorLayout {\n");
-        for i in 0..R1 {
+        for i in 0..R {
             kernel.push_str(&format!("\tin_stride_{}: u32,\n", i));
         }
         kernel.push_str(&format!("\tin_offset: u32,\n"));
-        for i in 0..R2 {
+        for i in 0..R {
             kernel.push_str(&format!("\tout_stride_{}: u32,\n", i));
         }
         kernel.push_str(&format!("\tout_offset: u32,\n"));
-        for i in 0..R2 {
+        for i in 0..R {
             kernel.push_str(&format!("\tout_shape_{}: u32,\n", i));
         }
         kernel.push_str("}\n");
@@ -79,7 +79,7 @@ impl ReduceOperation {
     fn tiled_map<const R1: usize, const R2: usize>(&self, blocksize: u32, inline: bool) -> String {
         let dtype = &self.dtype;
         let mut kernel = String::new();
-        ReduceTensorLayout::<R1, R2>::wgsl_type_definition(&mut kernel);
+        ReduceTensorLayout::<R2>::wgsl_type_definition(&mut kernel);
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
         // And the mlx implementation https://github.com/ml-explore/mlx/blob/b05bcfd27f5f1293401b74dce02e38c8fd7ef66a/mlx/backend/metal/kernels/arg_reduce.metal
         // We can't query the warp size in WGSL, but we can use subgroup operations
@@ -104,7 +104,7 @@ impl ReduceOperation {
             kernel.push_str(&self.reduce.function(&self.dtype));
         }
         kernel.push_str("\n@compute @workgroup_size(BLOCKSIZE)\n");
-        kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_index) local_id: u32, @builtin(subgroup_size) subgroup_size: u32) {\n");
+        kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(subgroup_size) subgroup_size: u32) {\n");
         kernel.push_str("\tlet thread_index = global_id.x;\n");
         kernel.push_str("\tlet workgroup_local_index = thread_index % BLOCKSIZE;\n");
         kernel.push_str("\tlet subgroup_id = workgroup_local_index / subgroup_size;\n");
@@ -115,8 +115,8 @@ impl ReduceOperation {
         // start offset of the input and output tensors for each thread group.
         kernel.push_str("\tlet workgroup_index = global_id.x / BLOCKSIZE;\n");
         kernel.push_str("\tvar workgroup_index_remainder = workgroup_index;\n");
-        kernel.push_str("\tvar in_start_offset = 0u;\n");
-        kernel.push_str("\tvar out_start_offset = 0u;\n");
+        kernel.push_str("\tvar in_start_offset = tensor_layout.in_offset;\n");
+        kernel.push_str("\tvar out_start_offset = tensor_layout.out_offset;\n");
         for i in 0..R2 {
             kernel.push_str(&format!(
                 "\tlet index_{i} = workgroup_index_remainder % tensor_layout.out_shape_{i};\n"
@@ -142,7 +142,8 @@ impl ReduceOperation {
         kernel.push_str("\tfor (var index = 0u; index < bucket_size; index += 1u) {\n");
         kernel.push_str("\t\tlet axis_index = workgroup_local_index * bucket_size + index;\n");
         kernel.push_str("\t\tif axis_index < reduce_axis_size {\n");
-        kernel.push_str("\t\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
+        kernel
+            .push_str("\t\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
         kernel.push_str("\t\t\tlet b = input_tensor[in_index];\n");
         kernel.push_str("\t\t\t");
         self.modify_element(inline, &mut kernel);
@@ -191,12 +192,17 @@ impl ReduceOperation {
 
         kernel.push_str("}\n");
 
+        println!("{}", kernel);
+
         kernel
     }
 
     pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
         let limits = tensor.device().wgpu_device().limits();
-        let max_blocksize = (tensor.layout().shape()[dim] as u32).min(limits.max_compute_workgroup_size_x).max(limits.min_subgroup_size).max(32);
+        let max_blocksize = (tensor.layout().shape()[dim] as u32)
+            .min(limits.max_compute_workgroup_size_x)
+            .max(limits.min_subgroup_size)
+            .max(32);
         let module = self.kernel.get_or_init(|| {
             let source = self.tiled_map::<2, 1>(max_blocksize, true);
             tensor.device().create_shader_module(source)
@@ -294,7 +300,7 @@ impl ReduceOperation {
             },
         );
 
-        let layout = ReduceTensorLayout::for_tensors(tensor, &output_tensor);
+        let layout = ReduceTensorLayout::new(dim, tensor.layout(), output_tensor.layout());
 
         let layout =
             tensor
@@ -432,6 +438,13 @@ async fn test_reduce_add() {
 
     let add = add();
     let reduction = ReduceOperation::new(add);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 9.);
+    assert_eq!(output[[1]], 12.);
+
     let output = reduction.run(&tensor, 1);
 
     let output = output.as_slice().await.unwrap();
@@ -439,4 +452,78 @@ async fn test_reduce_add() {
     assert_eq!(output[[0]], 3.);
     assert_eq!(output[[1]], 7.);
     assert_eq!(output[[2]], 11.);
+}
+
+fn max() -> ReduceFunction {
+    ReduceFunction::new("merged = max(merged, b);".to_string(), "-3.40282e+38")
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_max() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let max = max();
+    let reduction = ReduceOperation::new(max);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 5.);
+    assert_eq!(output[[1]], 6.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 2.);
+    assert_eq!(output[[1]], 4.);
+    assert_eq!(output[[2]], 6.);
+}
+
+fn min() -> ReduceFunction {
+    ReduceFunction::new("merged = min(merged, b);".to_string(), "3.40282e+38")
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_min() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let min = min();
+    let reduction = ReduceOperation::new(min);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 1.);
+    assert_eq!(output[[1]], 2.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 1.);
+    assert_eq!(output[[1]], 3.);
+    assert_eq!(output[[2]], 5.);
 }
