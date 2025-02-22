@@ -51,7 +51,7 @@ impl<const R: usize, D> From<Layout<R, D>> for TensorLayout<R> {
     }
 }
 
-pub(super) struct Layout<const R: usize, D> {
+pub struct Layout<const R: usize, D> {
     offset: usize,
     shape: [usize; R],
     strides: [usize; R],

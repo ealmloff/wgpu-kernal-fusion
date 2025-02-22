@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use criterion::BatchSize;
 use futures::executor::block_on;
-use wgpu_compute::{AddConst, ElementWiseFunction, ElementWiseOperation, MulConst, UnaryOp};
+use wgpu_compute::{add_const, mul_const, ElementWiseFunction, ElementWiseOperation};
 use wgpu_compute::{Device, MatMul, Tensor};
 
 use criterion::BenchmarkId;
@@ -20,7 +20,12 @@ fn fused(c: &mut Criterion) {
         let _ = tensor.as_slice().await.unwrap();
     }
 
-    async fn add_const_separate(device: Device, tensor: Tensor<2, f32>, op1: Arc<ElementWiseOperation>, op2: Arc<ElementWiseOperation>) {
+    async fn add_const_separate(
+        device: Device,
+        tensor: Tensor<2, f32>,
+        op1: Arc<ElementWiseOperation>,
+        op2: Arc<ElementWiseOperation>,
+    ) {
         op1.run(&tensor);
         op2.run(&tensor);
         let _ = tensor.as_slice().await.unwrap();
@@ -40,9 +45,9 @@ fn fused(c: &mut Criterion) {
             block_on(tensor.as_slice()).unwrap();
 
             let fused = ElementWiseOperation::default()
-            .then(ElementWiseFunction::from(AddConst::new(1.0)))
-            .then(ElementWiseFunction::from(AddConst::new(1.0)));
-        let op = Arc::new(fused);
+                .then(add_const(1.0))
+                .then(add_const(1.0));
+            let op = Arc::new(fused);
 
             group.bench_with_input(
                 BenchmarkId::new("add-const-fused-wgpu", size),
@@ -72,8 +77,8 @@ fn fused(c: &mut Criterion) {
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
             block_on(tensor.as_slice()).unwrap();
 
-            let op1 = Arc::new(ElementWiseOperation::default().then(ElementWiseFunction::from(AddConst::new(1.0))));
-            let op2 = Arc::new(ElementWiseOperation::default().then(ElementWiseFunction::from(AddConst::new(1.0))));
+            let op1 = Arc::new(ElementWiseOperation::default().then(add_const(1.0)));
+            let op2 = Arc::new(ElementWiseOperation::default().then(add_const(1.0)));
 
             group.bench_with_input(
                 BenchmarkId::new("add-const-separate-wgpu", size),

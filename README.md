@@ -6,7 +6,7 @@ TODO:
 - [x] Elementwise ops
 - [x] Fuse Elementwise ops together
 - [x] MatMul
-- [ ] Reduce ops
+- [x] Reduce ops
 - [ ] Fuse Elementwise ops into Reduce ops
 - [ ] Fuse parallel Reduce ops
 - [ ] Dynamically apply fusion based on runtime throughput data

@@ -1,8 +1,8 @@
 #![allow(unused)]
 use criterion::BatchSize;
 use futures::executor::block_on;
-use wgpu_compute::{AddConst, ElementWiseFunction, ElementWiseOperation, MulConst, UnaryOp};
 use wgpu_compute::{Device, MatMul, Tensor};
+use wgpu_compute::{ElementWiseFunction, ElementWiseOperation};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -39,9 +39,7 @@ fn matmul(c: &mut Criterion) {
                 move |b, &s| {
                     let device = device.clone();
                     b.to_async(FuturesExecutor).iter_batched(
-                        || {
-                            (tensor.clone(), tensor.clone())
-                        },
+                        || (tensor.clone(), tensor.clone()),
                         |(tensor_a, tensor_b)| matmul(device.clone(), tensor_a, tensor_b),
                         BatchSize::LargeInput,
                     );

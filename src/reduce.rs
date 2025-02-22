@@ -61,10 +61,6 @@ impl ReduceOperation {
         }
     }
 
-    fn dtype(&self) -> String {
-        self.dtype.clone()
-    }
-
     fn modify_element(&self, inline: bool, kernel: &mut String) {
         if !inline {
             let call = self.reduce.call("merged", "b");
@@ -191,8 +187,6 @@ impl ReduceOperation {
         kernel.push_str("\t}\n");
 
         kernel.push_str("}\n");
-
-        println!("{}", kernel);
 
         kernel
     }
@@ -417,13 +411,13 @@ impl ReduceFunction {
     }
 }
 
-fn add() -> ReduceFunction {
+pub fn sum() -> ReduceFunction {
     ReduceFunction::new("merged = merged + b;".to_string(), "0.0")
 }
 
 #[cfg(test)]
 #[tokio::test]
-async fn test_reduce_add() {
+async fn test_reduce_sum() {
     use crate::Device;
 
     let device = Device::new().await.unwrap();
@@ -436,7 +430,7 @@ async fn test_reduce_add() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let add = add();
+    let add = sum();
     let reduction = ReduceOperation::new(add);
     let output = reduction.run(&tensor, 0);
 
@@ -454,7 +448,7 @@ async fn test_reduce_add() {
     assert_eq!(output[[2]], 11.);
 }
 
-fn max() -> ReduceFunction {
+pub fn max() -> ReduceFunction {
     ReduceFunction::new("merged = max(merged, b);".to_string(), "-3.40282e+38")
 }
 
@@ -491,7 +485,7 @@ async fn test_reduce_max() {
     assert_eq!(output[[2]], 6.);
 }
 
-fn min() -> ReduceFunction {
+pub fn min() -> ReduceFunction {
     ReduceFunction::new("merged = min(merged, b);".to_string(), "3.40282e+38")
 }
 
@@ -526,4 +520,41 @@ async fn test_reduce_min() {
     assert_eq!(output[[0]], 1.);
     assert_eq!(output[[1]], 3.);
     assert_eq!(output[[2]], 5.);
+}
+
+pub fn product() -> ReduceFunction {
+    ReduceFunction::new("merged = merged * b;".to_string(), "1.0")
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_product() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let product = product();
+    let reduction = ReduceOperation::new(product);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 15.);
+    assert_eq!(output[[1]], 48.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 2.);
+    assert_eq!(output[[1]], 12.);
+    assert_eq!(output[[2]], 30.);
 }
