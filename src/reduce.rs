@@ -2,7 +2,7 @@ use std::{cell::OnceCell, fmt::Display};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{layout::TILE_SIZE, tensor::DataType, Tensor};
+use crate::{tensor::DataType, Tensor};
 
 #[derive(Clone)]
 pub(crate) struct ReduceTensorLayout<const R1: usize, const R2: usize> {
@@ -88,7 +88,6 @@ impl ReduceOperation {
         // the storage memory only inside the workgroup.
         // This kernel just uses one workgroup per reduction unit like the MLX kernel
         kernel.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
-        kernel.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
         kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: ReduceTensorLayout;\n");
         kernel.push_str("@group(0) @binding(1) var<uniform> reduce_axis_stride: u32;\n");
         kernel.push_str("@group(0) @binding(2) var<uniform> reduce_axis_size: u32;\n");
@@ -105,24 +104,25 @@ impl ReduceOperation {
             kernel.push_str(&self.reduce.function(&self.dtype));
         }
         kernel.push_str("\n@compute @workgroup_size(BLOCKSIZE)\n");
-        kernel.push_str("fn main(@builtin(workgroup_id) global_id: vec3<u32>, @builtin(local_invocation_index) local_id: u32, @builtin(subgroup_size) subgroup_size: u32, @builtin(subgroup_invocation_id) subgroup_local_id: u32) {\n");
+        kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_index) local_id: u32, @builtin(subgroup_size) subgroup_size: u32) {\n");
         kernel.push_str("\tlet thread_index = global_id.x;\n");
         kernel.push_str("\tlet workgroup_local_index = thread_index % BLOCKSIZE;\n");
         kernel.push_str("\tlet subgroup_id = workgroup_local_index / subgroup_size;\n");
-        kernel.push_str("\t\tlet subgroups_per_workgroup = BLOCKSIZE / subgroup_size;\n");
+        kernel.push_str("\tlet subgroup_local_id = workgroup_local_index % subgroup_size;\n");
+        kernel.push_str("\tlet subgroups_per_workgroup = BLOCKSIZE / subgroup_size;\n");
 
-        // Each thread group works on a single column in the input tensor. This code calculates the
+        // Each workgroup group works on a single column in the input tensor. This code calculates the
         // start offset of the input and output tensors for each thread group.
-        kernel.push_str("\tlet thread_group_index = global_id.x / BLOCKSIZE;\n");
-        kernel.push_str("\tvar thread_group_index_remainder = thread_group_index;\n");
+        kernel.push_str("\tlet workgroup_index = global_id.x / BLOCKSIZE;\n");
+        kernel.push_str("\tvar workgroup_index_remainder = workgroup_index;\n");
         kernel.push_str("\tvar in_start_offset = 0u;\n");
         kernel.push_str("\tvar out_start_offset = 0u;\n");
         for i in 0..R2 {
             kernel.push_str(&format!(
-                "\tlet index_{i} = thread_group_index_remainder % tensor_layout.out_shape_{i};\n"
+                "\tlet index_{i} = workgroup_index_remainder % tensor_layout.out_shape_{i};\n"
             ));
             kernel.push_str(&format!(
-                "\tthread_group_index_remainder /= tensor_layout.out_shape_{i};\n"
+                "\tworkgroup_index_remainder /= tensor_layout.out_shape_{i};\n"
             ));
             kernel.push_str(&format!(
                 "\tin_start_offset += tensor_layout.in_stride_{i} * index_{i};\n"
@@ -137,14 +137,16 @@ impl ReduceOperation {
 
         // First merge values on each thread individually. We divide the column allocated to the thread group into equal sized buckets
         // Round up
-        kernel.push_str("\tlet bucket_size = reduce_axis_size / BLOCKSIZE + u32((reduce_axis_size % BLOCKSIZE) == 0u);\n");
+        kernel.push_str("\tlet bucket_size = reduce_axis_size / BLOCKSIZE + u32((reduce_axis_size % BLOCKSIZE) != 0u);\n");
         // Then loop over this thread's portion of the column and merge the values
         kernel.push_str("\tfor (var index = 0u; index < bucket_size; index += 1u) {\n");
-        kernel.push_str("\t\tlet axis_index = local_id * bucket_size + index;\n");
-        kernel.push_str("\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
-        kernel.push_str("\t\tlet b = input_tensor[in_index];\n");
-        kernel.push_str("\t\t");
+        kernel.push_str("\t\tlet axis_index = workgroup_local_index * bucket_size + index;\n");
+        kernel.push_str("\t\tif axis_index < reduce_axis_size {\n");
+        kernel.push_str("\t\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
+        kernel.push_str("\t\t\tlet b = input_tensor[in_index];\n");
+        kernel.push_str("\t\t\t");
         self.modify_element(inline, &mut kernel);
+        kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
         kernel.push_str("\n");
 
@@ -163,7 +165,7 @@ impl ReduceOperation {
         kernel.push_str("\t}\n");
 
         // Wait until all threads have written to the workgroup shared memory
-        kernel.push_str("workgroupBarrier();\n");
+        kernel.push_str("\tworkgroupBarrier();\n");
 
         // Then if this is the first subgroup, do one final shuffle down reduction
         kernel.push_str("\tif subgroup_id == 0u {\n");
@@ -171,10 +173,13 @@ impl ReduceOperation {
         kernel.push_str("\t\tif subgroup_local_id < subgroups_per_workgroup {\n");
         kernel.push_str("\t\t\tmerged = local_data[subgroup_local_id];\n");
         kernel.push_str("\t\t}\n");
+        kernel.push_str("\t\telse {\n");
+        kernel.push_str(&format!("\t\t\tmerged = {};\n", self.reduce.initial_value));
+        kernel.push_str("\t\t}\n");
         kernel.push_str("\t\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
         kernel.push_str("\t\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
         kernel.push_str("\t\t\tlet b = neighbor;\n");
-        kernel.push_str("\t\t");
+        kernel.push_str("\t\t\t");
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t\t}\n");
 
@@ -192,6 +197,7 @@ impl ReduceOperation {
     }
 
     pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
+        // let max_blocksize = tensor.layout().shape()[dim].min(256) as u32;
         let max_blocksize = 256;
         let module = self.kernel.get_or_init(|| {
             let source = self.tiled_map::<2, 1>(max_blocksize, true);
@@ -264,14 +270,7 @@ impl ReduceOperation {
             .wgpu_device()
             .create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: (tensor
-                    .layout()
-                    .shape()
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, size)| (i != dim).then(|| *size))
-                    .product::<usize>()
-                    * size_of::<f32>()) as u64,
+                size: (new_tensor_shape.iter().product::<usize>() * size_of::<f32>()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
@@ -309,15 +308,6 @@ impl ReduceOperation {
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
 
-        let axis_size_binding =
-            tensor
-                .device()
-                .wgpu_device()
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: None,
-                    contents: bytemuck::bytes_of(&shape[dim]),
-                    usage: wgpu::BufferUsages::UNIFORM,
-                });
         let axis_stride_binding =
             tensor
                 .device()
@@ -325,6 +315,16 @@ impl ReduceOperation {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
                     contents: bytemuck::bytes_of(&strides[dim]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+        let axis_size_binding =
+            tensor
+                .device()
+                .wgpu_device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::bytes_of(&shape[dim]),
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
 
@@ -342,11 +342,11 @@ impl ReduceOperation {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
-                            resource: axis_size_binding.as_entire_binding(),
+                            resource: axis_stride_binding.as_entire_binding(),
                         },
                         wgpu::BindGroupEntry {
                             binding: 2,
-                            resource: axis_stride_binding.as_entire_binding(),
+                            resource: axis_size_binding.as_entire_binding(),
                         },
                         wgpu::BindGroupEntry {
                             binding: 3,
@@ -367,13 +367,7 @@ impl ReduceOperation {
             let mut cpass = encoder.begin_compute_pass(&Default::default());
             cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
-            let layout = tensor.layout();
-            let shape = layout.shape();
-            let workgroup_size = shape
-                .iter()
-                .map(|x| *x as u32)
-                .product::<u32>()
-                .div_ceil(TILE_SIZE * max_blocksize);
+            let workgroup_size = output_tensor.layout().shape().iter().product::<usize>() as u32;
             cpass.dispatch_workgroups(workgroup_size, 1, 1)
         }
         tensor.device().wgpu_queue().submit(Some(encoder.finish()));
@@ -440,14 +434,11 @@ async fn test_reduce_add() {
 
     let add = add();
     let reduction = ReduceOperation::new(add);
-    reduction.run(&tensor, 1);
+    let output = reduction.run(&tensor, 1);
 
-    let output = tensor.as_slice().await.unwrap();
+    let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
-    assert_eq!(output[[0, 0]], 0.5);
-    assert_eq!(output[[0, 1]], 1.);
-    assert_eq!(output[[1, 0]], 1.5);
-    assert_eq!(output[[1, 1]], 2.);
-    assert_eq!(output[[2, 0]], 2.5);
-    assert_eq!(output[[2, 1]], 3.);
+    assert_eq!(output[[0]], 3.);
+    assert_eq!(output[[1]], 7.);
+    assert_eq!(output[[2]], 11.);
 }

@@ -226,6 +226,16 @@ pub struct TensorSlice<const R: usize, D> {
     layout: Layout<R, D>,
 }
 
+impl<D: DataType + Debug> Debug for TensorSlice<1, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let shape = self.layout.shape();
+        let vec = (0..shape[0])
+            .map(|i| self.get([i]).unwrap())
+            .collect::<Vec<_>>();
+        vec.fmt(f)
+    }
+}
+
 impl<D: DataType + Debug> Debug for TensorSlice<2, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shape = self.layout.shape();

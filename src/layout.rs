@@ -1,7 +1,5 @@
 use std::{marker::PhantomData, ops::Range};
 
-use wgpu::naga::common::wgsl;
-
 use crate::{tensor::DataType, Tensor};
 
 pub(crate) const TILE_SIZE: u32 = 8;
