@@ -2,7 +2,7 @@ use std::{fmt::Display, sync::OnceLock};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{layout::Layout, tensor::DataType, Tensor};
+use crate::{layout::Layout, tensor::DataType, ElementWiseOperation, Tensor};
 
 #[derive(Clone)]
 pub(crate) struct ReduceTensorLayout<const R: usize> {
@@ -48,7 +48,9 @@ impl<const R: usize> ReduceTensorLayout<R> {
 
 pub struct ReduceOperation {
     dtype: String,
+    pre_element_wise: ElementWiseOperation,
     reduce: ReduceFunction,
+    post_element_wise: ElementWiseOperation,
     kernel: OnceLock<wgpu::ShaderModule>,
 }
 
@@ -56,14 +58,16 @@ impl ReduceOperation {
     pub fn new(reduce: ReduceFunction) -> Self {
         Self {
             dtype: "f32".to_string(),
+            pre_element_wise: ElementWiseOperation::default(),
             reduce,
+            post_element_wise: ElementWiseOperation::default(),
             kernel: OnceLock::new(),
         }
     }
 
-    fn modify_element(&self, inline: bool, kernel: &mut String) {
+    fn merge(&self, inline: bool, kernel: &mut String) {
         if !inline {
-            let call = self.reduce.call("merged", "b");
+            let call = self.reduce.call("merged", "data");
 
             kernel.push_str(&format!("merged = {call};\n"));
         } else {
@@ -99,6 +103,8 @@ impl ReduceOperation {
         if !inline {
             kernel.push_str(&self.reduce.function(&self.dtype));
         }
+        self.pre_element_wise.add_functions(inline, &mut kernel);
+        self.post_element_wise.add_functions(inline, &mut kernel);
         kernel.push_str("\n@compute @workgroup_size(BLOCKSIZE)\n");
         kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>, @builtin(subgroup_size) subgroup_size: u32) {\n");
         kernel.push_str("\tlet thread_index = global_id.x;\n");
@@ -140,9 +146,10 @@ impl ReduceOperation {
         kernel.push_str("\t\tif axis_index < reduce_axis_size {\n");
         kernel
             .push_str("\t\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
-        kernel.push_str("\t\t\tlet b = input_tensor[in_index];\n");
+        kernel.push_str("\t\t\tvar data = input_tensor[in_index];\n");
+        self.pre_element_wise.modify_data(inline, &mut kernel);
         kernel.push_str("\t\t\t");
-        self.modify_element(inline, &mut kernel);
+        self.merge(inline, &mut kernel);
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
         kernel.push('\n');
@@ -150,9 +157,9 @@ impl ReduceOperation {
         // Next merge within each subgroup with shuffle down
         kernel.push_str("\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
         kernel.push_str("\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
-        kernel.push_str("\t\tlet b = neighbor;\n");
+        kernel.push_str("\t\tlet data = neighbor;\n");
         kernel.push_str("\t\t");
-        self.modify_element(inline, &mut kernel);
+        self.merge(inline, &mut kernel);
         kernel.push_str("\t}\n");
         kernel.push('\n');
 
@@ -175,14 +182,16 @@ impl ReduceOperation {
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
         kernel.push_str("\t\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
-        kernel.push_str("\t\t\tlet b = neighbor;\n");
+        kernel.push_str("\t\t\tlet data = neighbor;\n");
         kernel.push_str("\t\t\t");
-        self.modify_element(inline, &mut kernel);
+        self.merge(inline, &mut kernel);
         kernel.push_str("\t\t}\n");
 
         // Write the output to the output tensor if this is the first thread in the workgroup
         kernel.push_str("\t\tif workgroup_local_index == 0u {\n");
-        kernel.push_str("\t\t\toutput_tensor[out_start_offset] = merged;\n");
+        kernel.push_str("\t\t\tvar data = merged;\n");
+        self.post_element_wise.modify_data(inline, &mut kernel);
+        kernel.push_str("\t\t\toutput_tensor[out_start_offset] = data;\n");
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
 
@@ -402,7 +411,7 @@ impl ReduceFunction {
             name_id, operation, ..
         } = self;
         format!(
-            r#"fn reduce_{name_id}(a: {dtype}, b: {dtype}) -> {dtype} {{
+            r#"fn reduce_{name_id}(a: {dtype}, data: {dtype}) -> {dtype} {{
     var merged = a;
     {operation}
     return merged;
@@ -412,7 +421,7 @@ impl ReduceFunction {
 }
 
 pub fn sum() -> ReduceFunction {
-    ReduceFunction::new("merged = merged + b;".to_string(), "0.0")
+    ReduceFunction::new("merged = merged + data;".to_string(), "0.0")
 }
 
 #[cfg(test)]
@@ -448,8 +457,76 @@ async fn test_reduce_sum() {
     assert_eq!(output[[2]], 11.);
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_const_add_then_sum_fused() {
+    use crate::{add_const, Device};
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let add = sum();
+    let mut reduction = ReduceOperation::new(add);
+    reduction.pre_element_wise = ElementWiseOperation::new([add_const(1.0)]);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 3. + 9.);
+    assert_eq!(output[[1]], 3. + 12.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 2. + 3.);
+    assert_eq!(output[[1]], 2. + 7.);
+    assert_eq!(output[[2]], 2. + 11.);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_const_sum_then_add_fused() {
+    use crate::{add_const, Device};
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let add = sum();
+    let mut reduction = ReduceOperation::new(add);
+    reduction.post_element_wise = ElementWiseOperation::new([add_const(1.0)]);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 1. + 9.);
+    assert_eq!(output[[1]], 1. + 12.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 1. + 3.);
+    assert_eq!(output[[1]], 1. + 7.);
+    assert_eq!(output[[2]], 1. + 11.);
+}
+
 pub fn max() -> ReduceFunction {
-    ReduceFunction::new("merged = max(merged, b);".to_string(), "-3.40282e+38")
+    ReduceFunction::new("merged = max(merged, data);".to_string(), "-3.40282e+38")
 }
 
 #[cfg(test)]
@@ -486,7 +563,7 @@ async fn test_reduce_max() {
 }
 
 pub fn min() -> ReduceFunction {
-    ReduceFunction::new("merged = min(merged, b);".to_string(), "3.40282e+38")
+    ReduceFunction::new("merged = min(merged, data);".to_string(), "3.40282e+38")
 }
 
 #[cfg(test)]
@@ -523,7 +600,7 @@ async fn test_reduce_min() {
 }
 
 pub fn product() -> ReduceFunction {
-    ReduceFunction::new("merged = merged * b;".to_string(), "1.0")
+    ReduceFunction::new("merged = merged * data;".to_string(), "1.0")
 }
 
 #[cfg(test)]

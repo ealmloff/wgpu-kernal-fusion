@@ -45,21 +45,27 @@ impl ElementWiseOperation {
         }
     }
 
-    fn modify_element(&self, inline: bool, index: &str, kernel: &mut String) {
+    pub(crate) fn modify_data(&self, inline: bool, kernel: &mut String) {
         if !inline {
             let call = self
                 .functions
                 .iter()
-                .fold(format!("matrix[{index}]"), |acc, f| f.call(acc));
+                .fold(format!("data"), |acc, f| f.call(acc));
 
-            kernel.push_str(&format!("matrix[{index}] = {call};\n"));
+            kernel.push_str(&format!("data = {call};\n"));
         } else {
-            kernel.push_str(&format!("var data = matrix[{index}];\n"));
             for function in &self.functions {
                 kernel.push_str(&function.operation);
                 kernel.push('\n');
             }
-            kernel.push_str(&format!("matrix[{index}] = data;\n"));
+        }
+    }
+
+    pub(crate) fn add_functions(&self, inline: bool, kernel: &mut String) {
+        if !inline {
+            for function in &self.functions {
+                kernel.push_str(&function.function(&self.dtype));
+            }
         }
     }
 
@@ -74,15 +80,11 @@ impl ElementWiseOperation {
         TensorLayout::<R>::wgsl_type_definition(&mut kernel);
         kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
         kernel.push_str(&format!(
-            "@group(0) @binding(1) var<storage, read_write> matrix: array<{dtype}>;\n"
+            "@group(0) @binding(1) var<storage, read_write> tensor: array<{dtype}>;\n"
         ));
         kernel.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
         kernel.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
-        if !inline {
-            for function in &self.functions {
-                kernel.push_str(&function.function(&self.dtype));
-            }
-        }
+        self.add_functions(inline, &mut kernel);
         kernel.push_str("\n@compute @workgroup_size(");
         if contiguous {
             kernel.push_str("BLOCKSIZE");
@@ -110,8 +112,10 @@ impl ElementWiseOperation {
                     }
                 }
                 kernel.push_str(" {\n");
+                kernel.push_str(&format!("\t\t\tvar data = tensor[{index}];\n"));
                 kernel.push_str("\t\t\t");
-                self.modify_element(inline, &index, &mut kernel);
+                self.modify_data(inline, &mut kernel);
+                kernel.push_str(&format!("\t\t\ttensor[{index}] = data;\n"));
                 kernel.push_str("\t\t}\n");
             }
         } else {
@@ -163,7 +167,9 @@ impl ElementWiseOperation {
             for _ in 0..(R + 2) {
                 kernel.push('\t');
             }
-            self.modify_element(inline, "index", &mut kernel);
+            kernel.push_str("\t\t\tvar data = tensor[index];\n");
+            self.modify_data(inline, &mut kernel);
+            kernel.push_str("\t\t\ttensor[index] = data;\n");
 
             for _ in 0..(R + 1) {
                 kernel.push('\t');
