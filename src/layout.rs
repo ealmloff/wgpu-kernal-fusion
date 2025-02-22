@@ -83,6 +83,15 @@ impl<const R: usize, D> Layout<R, D> {
         }
     }
 
+    pub fn from_parts(offset: usize, shape: [usize; R], strides: [usize; R]) -> Self {
+        Self {
+            offset,
+            shape,
+            strides,
+            data_type: PhantomData,
+        }
+    }
+
     pub fn is_contiguous(&self) -> bool {
         self.offset == 0 && self.strides == continuous_strides(self.shape)
     }

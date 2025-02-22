@@ -2,21 +2,17 @@ use std::{cell::OnceCell, fmt::Display};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{
-    layout::{TensorLayout, TILE_SIZE},
-    tensor::DataType,
-    Tensor,
-};
+use crate::{layout::TILE_SIZE, tensor::DataType, Tensor};
 
 #[derive(Clone)]
-pub(crate) struct ReduceTensorLayout<const R: usize> {
+pub(crate) struct ReduceTensorLayout<const R1: usize, const R2: usize> {
     pub(crate) data: Box<[u32]>,
 }
 
-impl<const R: usize> ReduceTensorLayout<R> {
+impl<const R1: usize, const R2: usize> ReduceTensorLayout<R1, R2> {
     pub(crate) fn for_tensors<D: DataType>(
-        input_tensor: &Tensor<R, D>,
-        output_tensor: &Tensor<R, D>,
+        input_tensor: &Tensor<R1, D>,
+        output_tensor: &Tensor<R2, D>,
     ) -> Self {
         let input_layout = *input_tensor.layout();
         let output_layout = *output_tensor.layout();
@@ -35,15 +31,15 @@ impl<const R: usize> ReduceTensorLayout<R> {
 
     pub(crate) fn wgsl_type_definition(kernel: &mut String) {
         kernel.push_str("struct ReduceTensorLayout {\n");
-        for i in 0..R {
+        for i in 0..R1 {
             kernel.push_str(&format!("\tin_stride_{}: u32,\n", i));
         }
         kernel.push_str(&format!("\tin_offset: u32,\n"));
-        for i in 0..R {
+        for i in 0..R2 {
             kernel.push_str(&format!("\tout_stride_{}: u32,\n", i));
         }
         kernel.push_str(&format!("\tout_offset: u32,\n"));
-        for i in 0..R {
+        for i in 0..R2 {
             kernel.push_str(&format!("\tout_shape_{}: u32,\n", i));
         }
         kernel.push_str("}\n");
@@ -53,8 +49,7 @@ impl<const R: usize> ReduceTensorLayout<R> {
 pub struct ReduceOperation {
     dtype: String,
     reduce: ReduceFunction,
-    dense_kernel: OnceCell<wgpu::ShaderModule>,
-    sparse_kernel: OnceCell<wgpu::ShaderModule>,
+    kernel: OnceCell<wgpu::ShaderModule>,
 }
 
 impl ReduceOperation {
@@ -62,8 +57,7 @@ impl ReduceOperation {
         Self {
             dtype: "f32".to_string(),
             reduce,
-            dense_kernel: OnceCell::new(),
-            sparse_kernel: OnceCell::new(),
+            kernel: OnceCell::new(),
         }
     }
 
@@ -82,10 +76,10 @@ impl ReduceOperation {
         }
     }
 
-    fn tiled_map<const R: usize>(&self, blocksize: u32, inline: bool) -> String {
+    fn tiled_map<const R1: usize, const R2: usize>(&self, blocksize: u32, inline: bool) -> String {
         let dtype = &self.dtype;
         let mut kernel = String::new();
-        TensorLayout::<R>::wgsl_type_definition(&mut kernel);
+        ReduceTensorLayout::<R1, R2>::wgsl_type_definition(&mut kernel);
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
         // And the mlx implementation https://github.com/ml-explore/mlx/blob/b05bcfd27f5f1293401b74dce02e38c8fd7ef66a/mlx/backend/metal/kernels/arg_reduce.metal
         // We can't query the warp size in WGSL, but we can use subgroup operations
@@ -112,23 +106,23 @@ impl ReduceOperation {
         }
         kernel.push_str("\n@compute @workgroup_size(BLOCKSIZE)\n");
         kernel.push_str("fn main(@builtin(workgroup_id) global_id: vec3<u32>, @builtin(local_invocation_index) local_id: u32, @builtin(subgroup_size) subgroup_size: u32, @builtin(subgroup_invocation_id) subgroup_local_id: u32) {\n");
-        kernel.push_str("\tconst thread_index = global_id.x;\n");
-        kernel.push_str("\tconst workgroup_local_index = thread_index % BLOCKSIZE;\n");
-        kernel.push_str("\tconst subgroup_id = workgroup_local_index / subgroup_size;\n");
-        kernel.push_str("\t\tconst subgroups_per_workgroup = BLOCKSIZE / subgroup_size;\n");
+        kernel.push_str("\tlet thread_index = global_id.x;\n");
+        kernel.push_str("\tlet workgroup_local_index = thread_index % BLOCKSIZE;\n");
+        kernel.push_str("\tlet subgroup_id = workgroup_local_index / subgroup_size;\n");
+        kernel.push_str("\t\tlet subgroups_per_workgroup = BLOCKSIZE / subgroup_size;\n");
 
         // Each thread group works on a single column in the input tensor. This code calculates the
         // start offset of the input and output tensors for each thread group.
-        kernel.push_str("\tconst thread_group_index = global_id.x / BLOCKSIZE;\n");
+        kernel.push_str("\tlet thread_group_index = global_id.x / BLOCKSIZE;\n");
         kernel.push_str("\tvar thread_group_index_remainder = thread_group_index;\n");
-        kernel.push_str("\tvar in_start_offset = 0;\n");
-        kernel.push_str("\tvar out_start_offset = 0;\n");
-        for i in 0..R {
+        kernel.push_str("\tvar in_start_offset = 0u;\n");
+        kernel.push_str("\tvar out_start_offset = 0u;\n");
+        for i in 0..R2 {
             kernel.push_str(&format!(
-                "\tconst index_{i} = thread_group_index_remainder % tensor_layout.shape_{i};\n"
+                "\tlet index_{i} = thread_group_index_remainder % tensor_layout.out_shape_{i};\n"
             ));
             kernel.push_str(&format!(
-                "\tthread_group_index_remainder /= tensor_layout.shape_{i};\n"
+                "\tthread_group_index_remainder /= tensor_layout.out_shape_{i};\n"
             ));
             kernel.push_str(&format!(
                 "\tin_start_offset += tensor_layout.in_stride_{i} * index_{i};\n"
@@ -139,31 +133,32 @@ impl ReduceOperation {
         }
         kernel.push_str("\n");
 
-        kernel.push_str(&format!("\tval merged = {};\n", self.reduce.initial_value));
+        kernel.push_str(&format!("\tvar merged = {};\n", self.reduce.initial_value));
 
         // First merge values on each thread individually. We divide the column allocated to the thread group into equal sized buckets
         // Round up
-        kernel.push_str("\tconst bucket_size = reduce_axis_size / BLOCKSIZE + u32((reduce_axis_size % BLOCKSIZE) == 0);\n");
+        kernel.push_str("\tlet bucket_size = reduce_axis_size / BLOCKSIZE + u32((reduce_axis_size % BLOCKSIZE) == 0u);\n");
         // Then loop over this thread's portion of the column and merge the values
-        kernel.push_str("\tfor (var index = 0; index < bucket_size; index += 1) {\n");
-        kernel.push_str("\t\tconst axis_index = local_id * bucket_size + index;\n");
-        kernel
-            .push_str("\t\tconst in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
-        kernel.push_str("\t\tconst b = input_tensor[in_index];\n");
+        kernel.push_str("\tfor (var index = 0u; index < bucket_size; index += 1u) {\n");
+        kernel.push_str("\t\tlet axis_index = local_id * bucket_size + index;\n");
+        kernel.push_str("\t\tlet in_index = in_start_offset + axis_index * reduce_axis_stride;\n");
+        kernel.push_str("\t\tlet b = input_tensor[in_index];\n");
+        kernel.push_str("\t\t");
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t}\n");
         kernel.push_str("\n");
 
         // Next merge within each subgroup with shuffle down
-        kernel.push_str("\tfor (var offset = subgroup_size / 2; offset > 0; offset /= 2) {\n");
-        kernel.push_str("\t\tconst neighbor = shuffle_down(merged, offset);\n");
-        kernel.push_str("\t\tconst b = neighbor;\n");
+        kernel.push_str("\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
+        kernel.push_str("\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
+        kernel.push_str("\t\tlet b = neighbor;\n");
+        kernel.push_str("\t\t");
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t}\n");
         kernel.push_str("\n");
 
         // Write the output to the workgroup memory if this is the first thread in the subgroup
-        kernel.push_str("\tif subgroup_local_id == 0 {\n");
+        kernel.push_str("\tif subgroup_local_id == 0u {\n");
         kernel.push_str("\t\tlocal_data[subgroup_id] = merged;\n");
         kernel.push_str("\t}\n");
 
@@ -171,47 +166,37 @@ impl ReduceOperation {
         kernel.push_str("workgroupBarrier();\n");
 
         // Then if this is the first subgroup, do one final shuffle down reduction
-        kernel.push_str("\tif subgroup_id == 0 {\n");
+        kernel.push_str("\tif subgroup_id == 0u {\n");
         // Copy over the best value from each subgroup from the workgroup shared memory to the merged variable
         kernel.push_str("\t\tif subgroup_local_id < subgroups_per_workgroup {\n");
         kernel.push_str("\t\t\tmerged = local_data[subgroup_local_id];\n");
         kernel.push_str("\t\t}\n");
-        kernel.push_str("\t\tfor (var offset = subgroup_size / 2; offset > 0; offset /= 2) {\n");
-        kernel.push_str("\t\t\tconst neighbor = shuffle_down(merged, offset);\n");
-        kernel.push_str("\t\t\tconst b = neighbor;\n");
+        kernel.push_str("\t\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
+        kernel.push_str("\t\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
+        kernel.push_str("\t\t\tlet b = neighbor;\n");
+        kernel.push_str("\t\t");
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t\t}\n");
 
         // Write the output to the output tensor if this is the first thread in the workgroup
-        kernel.push_str("\t\tif workgroup_local_index == 0 {\n");
+        kernel.push_str("\t\tif workgroup_local_index == 0u {\n");
         kernel.push_str("\t\t\toutput_tensor[global_id.x] = merged;\n");
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
 
         kernel.push_str("}\n");
 
+        println!("{}", kernel);
+
         kernel
     }
 
-    pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
-        let contiguous = tensor.layout().is_contiguous();
-        let max_blocksize = if contiguous {
-            256
-        } else {
-            // max_blocksize^R = 256
-            (256f64.powf(1. / R as f64)).floor() as u32
-        };
-        let module = if contiguous {
-            self.dense_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true);
-                tensor.device().create_shader_module(source)
-            })
-        } else {
-            self.sparse_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true);
-                tensor.device().create_shader_module(source)
-            })
-        };
+    pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
+        let max_blocksize = 256;
+        let module = self.kernel.get_or_init(|| {
+            let source = self.tiled_map::<2, 1>(max_blocksize, true);
+            tensor.device().create_shader_module(source)
+        });
 
         let bind_group_layout = tensor.device().wgpu_device().create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
@@ -231,6 +216,36 @@ impl ReduceOperation {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: None,
@@ -240,6 +255,28 @@ impl ReduceOperation {
                 ],
             },
         );
+        let shape = tensor.layout().shape();
+        let strides = tensor.layout().strides();
+        let new_tensor_shape =
+            std::array::from_fn(|i| if i < dim { shape[i] } else { shape[i + 1] });
+        let output_buf = tensor
+            .device()
+            .wgpu_device()
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (tensor
+                    .layout()
+                    .shape()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, size)| (i != dim).then(|| *size))
+                    .product::<usize>()
+                    * size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+        let output_tensor = Tensor::new_from_buffer(tensor.device(), output_buf, new_tensor_shape);
+
         let compute_pipeline_layout =
             tensor
                 .device()
@@ -260,7 +297,7 @@ impl ReduceOperation {
             },
         );
 
-        let layout = TensorLayout::for_tensor(tensor);
+        let layout = ReduceTensorLayout::for_tensors(tensor, &output_tensor);
 
         let layout =
             tensor
@@ -269,7 +306,26 @@ impl ReduceOperation {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
                     contents: bytemuck::cast_slice(&layout.data),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+        let axis_size_binding =
+            tensor
+                .device()
+                .wgpu_device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::bytes_of(&shape[dim]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+        let axis_stride_binding =
+            tensor
+                .device()
+                .wgpu_device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::bytes_of(&strides[dim]),
+                    usage: wgpu::BufferUsages::UNIFORM,
                 });
 
         let bind_group =
@@ -286,7 +342,19 @@ impl ReduceOperation {
                         },
                         wgpu::BindGroupEntry {
                             binding: 1,
+                            resource: axis_size_binding.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: axis_stride_binding.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
                             resource: tensor.buffer().as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: output_tensor.buffer().as_entire_binding(),
                         },
                     ],
                 });
@@ -301,34 +369,16 @@ impl ReduceOperation {
             cpass.set_bind_group(0, &bind_group, &[]);
             let layout = tensor.layout();
             let shape = layout.shape();
-            let (workgroup_size_x, workgroup_size_y, workgroup_size_z) = if contiguous {
-                (
-                    shape
-                        .iter()
-                        .map(|x| *x as u32)
-                        .product::<u32>()
-                        .div_ceil(TILE_SIZE * max_blocksize),
-                    1,
-                    1,
-                )
-            } else {
-                let workgroup_size_x = shape
-                    .get(0)
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                let workgroup_size_y = shape
-                    .get(1)
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                let workgroup_size_z = shape
-                    .get(2)
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                (workgroup_size_x, workgroup_size_y, workgroup_size_z)
-            };
-            cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
+            let workgroup_size = shape
+                .iter()
+                .map(|x| *x as u32)
+                .product::<u32>()
+                .div_ceil(TILE_SIZE * max_blocksize);
+            cpass.dispatch_workgroups(workgroup_size, 1, 1)
         }
         tensor.device().wgpu_queue().submit(Some(encoder.finish()));
+
+        output_tensor
     }
 }
 
@@ -367,4 +417,37 @@ impl ReduceFunction {
 }}"#
         )
     }
+}
+
+fn add() -> ReduceFunction {
+    ReduceFunction::new("merged = merged + b;".to_string(), "0.0")
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_reduce_add() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let add = add();
+    let reduction = ReduceOperation::new(add);
+    reduction.run(&tensor, 1);
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], 0.5);
+    assert_eq!(output[[0, 1]], 1.);
+    assert_eq!(output[[1, 0]], 1.5);
+    assert_eq!(output[[1, 1]], 2.);
+    assert_eq!(output[[2, 0]], 2.5);
+    assert_eq!(output[[2, 1]], 3.);
 }
