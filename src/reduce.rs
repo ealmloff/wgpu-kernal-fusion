@@ -185,20 +185,18 @@ impl ReduceOperation {
 
         // Write the output to the output tensor if this is the first thread in the workgroup
         kernel.push_str("\t\tif workgroup_local_index == 0u {\n");
-        kernel.push_str("\t\t\toutput_tensor[global_id.x] = merged;\n");
+        kernel.push_str("\t\t\toutput_tensor[out_start_offset] = merged;\n");
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
 
         kernel.push_str("}\n");
 
-        println!("{}", kernel);
-
         kernel
     }
 
     pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
-        // let max_blocksize = tensor.layout().shape()[dim].min(256) as u32;
-        let max_blocksize = 256;
+        let limits = tensor.device().wgpu_device().limits();
+        let max_blocksize = (tensor.layout().shape()[dim] as u32).min(limits.max_compute_workgroup_size_x).max(limits.min_subgroup_size).max(32);
         let module = self.kernel.get_or_init(|| {
             let source = self.tiled_map::<2, 1>(max_blocksize, true);
             tensor.device().create_shader_module(source)
