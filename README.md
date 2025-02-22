@@ -8,6 +8,7 @@ TODO:
 - [x] MatMul
 - [ ] Reduce ops
 - [ ] Fuse Elementwise ops into Reduce ops
+- [ ] Fuse parallel Reduce ops
 - [ ] Dynamically apply fusion based on runtime throughput data
 
 ## Resources

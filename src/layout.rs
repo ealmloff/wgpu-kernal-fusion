@@ -27,16 +27,16 @@ impl<const R: usize> TensorLayout<R> {
         layout.into()
     }
 
-    pub(crate) fn wgsl_type_definition(kernal: &mut String) {
-        kernal.push_str("struct TensorLayout {\n");
+    pub(crate) fn wgsl_type_definition(kernel: &mut String) {
+        kernel.push_str("struct TensorLayout {\n");
         for i in 0..R {
-            kernal.push_str(&format!("\tstride_{}: u32,\n", i));
+            kernel.push_str(&format!("\tstride_{}: u32,\n", i));
         }
         for i in 0..R {
-            kernal.push_str(&format!("\tshape_{}: u32,\n", i));
+            kernel.push_str(&format!("\tshape_{}: u32,\n", i));
         }
-        kernal.push_str(&format!("\toffset: u32,\n"));
-        kernal.push_str("}\n");
+        kernel.push_str(&format!("\toffset: u32,\n"));
+        kernel.push_str("}\n");
     }
 }
 

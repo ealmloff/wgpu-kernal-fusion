@@ -49,21 +49,21 @@ impl ElementWiseOperation {
         self.dtype.clone()
     }
 
-    fn modify_element(&self, inline: bool, index: &str, kernal: &mut String) {
+    fn modify_element(&self, inline: bool, index: &str, kernel: &mut String) {
         if !inline {
             let call = self
                 .functions
                 .iter()
                 .fold(format!("matrix[{index}]"), |acc, f| f.call(acc));
 
-            kernal.push_str(&format!("matrix[{index}] = {call};\n"));
+            kernel.push_str(&format!("matrix[{index}] = {call};\n"));
         } else {
-            kernal.push_str(&format!("var data = matrix[{index}];\n"));
+            kernel.push_str(&format!("var data = matrix[{index}];\n"));
             for function in &self.functions {
-                kernal.push_str(&function.operation);
-                kernal.push('\n');
+                kernel.push_str(&function.operation);
+                kernel.push('\n');
             }
-            kernal.push_str(&format!("matrix[{index}] = data;\n"));
+            kernel.push_str(&format!("matrix[{index}] = data;\n"));
         }
     }
 
@@ -74,117 +74,117 @@ impl ElementWiseOperation {
 
         let dtype = &self.dtype;
 
-        let mut kernal = String::new();
-        TensorLayout::<R>::wgsl_type_definition(&mut kernal);
-        kernal.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
-        kernal.push_str(&format!(
+        let mut kernel = String::new();
+        TensorLayout::<R>::wgsl_type_definition(&mut kernel);
+        kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
+        kernel.push_str(&format!(
             "@group(0) @binding(1) var<storage, read_write> matrix: array<{dtype}>;\n"
         ));
-        kernal.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
-        kernal.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
+        kernel.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
+        kernel.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
         if !inline {
             for function in &self.functions {
-                kernal.push_str(&function.function(&self.dtype));
+                kernel.push_str(&function.function(&self.dtype));
             }
         }
-        kernal.push_str("\n@compute @workgroup_size(");
+        kernel.push_str("\n@compute @workgroup_size(");
         if contiguous {
-            kernal.push_str("BLOCKSIZE");
+            kernel.push_str("BLOCKSIZE");
         } else {
             for i in 0..R {
-                kernal.push_str(&format!("BLOCKSIZE"));
+                kernel.push_str(&format!("BLOCKSIZE"));
                 if i < R - 1 {
-                    kernal.push_str(", ");
+                    kernel.push_str(", ");
                 }
             }
         }
-        kernal.push_str(")\n");
-        kernal.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {\n");
+        kernel.push_str(")\n");
+        kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {\n");
         if contiguous {
             for local_index in 0..TILE_SIZE {
                 let index = format!("index_{local_index}");
-                kernal.push_str(
+                kernel.push_str(
                     &format!("\t\tlet {index} = global_id.x * TILE_SIZE + {local_index} + tensor_layout.offset;\n"),
                 );
-                kernal.push_str(&format!("\t\tif {index} < \n"));
+                kernel.push_str(&format!("\t\tif {index} < \n"));
                 for i in 0..R {
-                    kernal.push_str(&format!("tensor_layout.shape_{i}"));
+                    kernel.push_str(&format!("tensor_layout.shape_{i}"));
                     if i < R - 1 {
-                        kernal.push_str(" * ");
+                        kernel.push_str(" * ");
                     }
                 }
-                kernal.push_str(" {\n");
-                kernal.push_str("\t\t\t");
-                self.modify_element(inline, &index, &mut kernal);
-                kernal.push_str("\t\t}\n");
+                kernel.push_str(" {\n");
+                kernel.push_str("\t\t\t");
+                self.modify_element(inline, &index, &mut kernel);
+                kernel.push_str("\t\t}\n");
             }
         } else {
             for i in 0..R {
                 let index = ["x", "y", "z"][i];
-                kernal.push_str(&format!(
+                kernel.push_str(&format!(
                     "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE + tensor_layout.offset;\n"
                 ));
             }
-            kernal.push_str("\n");
+            kernel.push_str("\n");
 
             for i in 0..R {
                 for _ in 0..(i + 1) {
-                    kernal.push('\t');
+                    kernel.push('\t');
                 }
-                kernal.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
+                kernel.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
             }
 
             for i in 0..R {
                 for _ in 0..(R + 1) {
-                    kernal.push('\t');
+                    kernel.push('\t');
                 }
-                kernal.push_str(&format!(
+                kernel.push_str(&format!(
                     "let merged_index_{i} = tile_index_{i} + local_index_{i};\n"
                 ));
             }
 
             for _ in 0..(R + 1) {
-                kernal.push('\t');
+                kernel.push('\t');
             }
 
-            kernal.push_str("if ");
+            kernel.push_str("if ");
             for i in 0..R {
-                kernal.push_str(&format!("merged_index_{i} < tensor_layout.shape_{i} && "));
+                kernel.push_str(&format!("merged_index_{i} < tensor_layout.shape_{i} && "));
             }
-            kernal.push_str("true {\n");
+            kernel.push_str("true {\n");
             for _ in 0..(R + 2) {
-                kernal.push('\t');
+                kernel.push('\t');
             }
-            kernal.push_str(&format!("let index = "));
+            kernel.push_str(&format!("let index = "));
             if contiguous {
-                kernal.push_str("global_id.x * TILE_SIZE;\n");
+                kernel.push_str("global_id.x * TILE_SIZE;\n");
             } else {
                 for i in 0..R {
-                    kernal.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
+                    kernel.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
                 }
-                kernal.push_str("0;\n");
+                kernel.push_str("0;\n");
             }
             for _ in 0..(R + 2) {
-                kernal.push('\t');
+                kernel.push('\t');
             }
-            self.modify_element(inline, "index", &mut kernal);
+            self.modify_element(inline, "index", &mut kernel);
 
             for _ in 0..(R + 1) {
-                kernal.push('\t');
+                kernel.push('\t');
             }
-            kernal.push_str("}\n");
+            kernel.push_str("}\n");
 
             for i in (0..R).rev() {
                 for _ in 0..(i + 1) {
-                    kernal.push('\t');
+                    kernel.push('\t');
                 }
-                kernal.push_str("}\n");
+                kernel.push_str("}\n");
             }
         }
 
-        kernal.push_str("}\n");
+        kernel.push_str("}\n");
 
-        kernal
+        kernel
     }
 
     pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
