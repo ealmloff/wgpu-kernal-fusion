@@ -33,7 +33,7 @@ impl<const R: usize> TensorLayout<R> {
         for i in 0..R {
             kernel.push_str(&format!("\tshape_{}: u32,\n", i));
         }
-        kernel.push_str(&format!("\toffset: u32,\n"));
+        kernel.push_str("\toffset: u32,\n");
         kernel.push_str("}\n");
     }
 }
@@ -60,12 +60,7 @@ pub struct Layout<const R: usize, D> {
 
 impl<const R: usize, D> Clone for Layout<R, D> {
     fn clone(&self) -> Self {
-        Self {
-            offset: self.offset,
-            shape: self.shape,
-            strides: self.strides,
-            data_type: PhantomData,
-        }
+        *self
     }
 }
 impl<const R: usize, D> Copy for Layout<R, D> {}

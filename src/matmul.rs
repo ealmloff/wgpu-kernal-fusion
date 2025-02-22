@@ -4,6 +4,12 @@ use crate::{Device, Tensor};
 
 pub struct MatMul;
 
+impl Default for MatMul {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MatMul {
     pub const fn new() -> Self {
         Self

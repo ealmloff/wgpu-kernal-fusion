@@ -24,7 +24,7 @@ impl<const R: usize, D> Clone for Tensor<R, D> {
         Self {
             device: self.device.clone(),
             buffer: self.buffer.clone(),
-            layout: self.layout.clone(),
+            layout: self.layout,
         }
     }
 }

@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, fmt::Display};
+use std::{fmt::Display, sync::OnceLock};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
@@ -19,7 +19,7 @@ impl<const R: usize> ReduceTensorLayout<R> {
             .strides()
             .iter()
             .enumerate()
-            .filter_map(|(i, x)| (i != dim).then(|| *x as u32))
+            .filter_map(|(i, x)| (i != dim).then_some(*x as u32))
             .chain(std::iter::once(input_layout.offset() as u32))
             .chain(output_layout.strides().iter().map(|x| *x as u32))
             .chain(std::iter::once(output_layout.offset() as u32))
@@ -34,11 +34,11 @@ impl<const R: usize> ReduceTensorLayout<R> {
         for i in 0..R {
             kernel.push_str(&format!("\tin_stride_{}: u32,\n", i));
         }
-        kernel.push_str(&format!("\tin_offset: u32,\n"));
+        kernel.push_str("\tin_offset: u32,\n");
         for i in 0..R {
             kernel.push_str(&format!("\tout_stride_{}: u32,\n", i));
         }
-        kernel.push_str(&format!("\tout_offset: u32,\n"));
+        kernel.push_str("\tout_offset: u32,\n");
         for i in 0..R {
             kernel.push_str(&format!("\tout_shape_{}: u32,\n", i));
         }
@@ -49,7 +49,7 @@ impl<const R: usize> ReduceTensorLayout<R> {
 pub struct ReduceOperation {
     dtype: String,
     reduce: ReduceFunction,
-    kernel: OnceCell<wgpu::ShaderModule>,
+    kernel: OnceLock<wgpu::ShaderModule>,
 }
 
 impl ReduceOperation {
@@ -57,7 +57,7 @@ impl ReduceOperation {
         Self {
             dtype: "f32".to_string(),
             reduce,
-            kernel: OnceCell::new(),
+            kernel: OnceLock::new(),
         }
     }
 
@@ -127,7 +127,7 @@ impl ReduceOperation {
                 "\tout_start_offset += tensor_layout.out_stride_{i} * index_{i};\n"
             ));
         }
-        kernel.push_str("\n");
+        kernel.push('\n');
 
         kernel.push_str(&format!("\tvar merged = {};\n", self.reduce.initial_value));
 
@@ -145,7 +145,7 @@ impl ReduceOperation {
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t}\n");
-        kernel.push_str("\n");
+        kernel.push('\n');
 
         // Next merge within each subgroup with shuffle down
         kernel.push_str("\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
@@ -154,7 +154,7 @@ impl ReduceOperation {
         kernel.push_str("\t\t");
         self.modify_element(inline, &mut kernel);
         kernel.push_str("\t}\n");
-        kernel.push_str("\n");
+        kernel.push('\n');
 
         // Write the output to the workgroup memory if this is the first thread in the subgroup
         kernel.push_str("\tif subgroup_local_id == 0u {\n");
@@ -287,7 +287,7 @@ impl ReduceOperation {
             &wgpu::ComputePipelineDescriptor {
                 label: None,
                 layout: Some(&compute_pipeline_layout),
-                module: &module,
+                module,
                 entry_point: Some("main"),
                 cache: None,
                 compilation_options: PipelineCompilationOptions::default(),

@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, fmt::Display};
+use std::{fmt::Display, sync::OnceLock};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
@@ -13,8 +13,8 @@ use crate::Device;
 pub struct ElementWiseOperation {
     dtype: String,
     functions: Vec<ElementWiseFunction>,
-    dense_kernel: OnceCell<wgpu::ShaderModule>,
-    sparse_kernel: OnceCell<wgpu::ShaderModule>,
+    dense_kernel: OnceLock<wgpu::ShaderModule>,
+    sparse_kernel: OnceLock<wgpu::ShaderModule>,
 }
 
 impl Default for ElementWiseOperation {
@@ -28,8 +28,8 @@ impl ElementWiseOperation {
         Self {
             dtype: "f32".to_string(),
             functions: functions.into_iter().collect(),
-            dense_kernel: OnceCell::new(),
-            sparse_kernel: OnceCell::new(),
+            dense_kernel: OnceLock::new(),
+            sparse_kernel: OnceLock::new(),
         }
     }
 
@@ -40,8 +40,8 @@ impl ElementWiseOperation {
         Self {
             dtype,
             functions,
-            dense_kernel: OnceCell::new(),
-            sparse_kernel: OnceCell::new(),
+            dense_kernel: OnceLock::new(),
+            sparse_kernel: OnceLock::new(),
         }
     }
 
@@ -88,7 +88,7 @@ impl ElementWiseOperation {
             kernel.push_str("BLOCKSIZE");
         } else {
             for i in 0..R {
-                kernel.push_str(&format!("BLOCKSIZE"));
+                kernel.push_str("BLOCKSIZE");
                 if i < R - 1 {
                     kernel.push_str(", ");
                 }
@@ -121,7 +121,7 @@ impl ElementWiseOperation {
                     "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE + tensor_layout.offset;\n"
                 ));
             }
-            kernel.push_str("\n");
+            kernel.push('\n');
 
             for i in 0..R {
                 for _ in 0..(i + 1) {
@@ -151,7 +151,7 @@ impl ElementWiseOperation {
             for _ in 0..(R + 2) {
                 kernel.push('\t');
             }
-            kernel.push_str(&format!("let index = "));
+            kernel.push_str("let index = ");
             if contiguous {
                 kernel.push_str("global_id.x * TILE_SIZE;\n");
             } else {
@@ -243,7 +243,7 @@ impl ElementWiseOperation {
             &wgpu::ComputePipelineDescriptor {
                 label: None,
                 layout: Some(&compute_pipeline_layout),
-                module: &module,
+                module,
                 entry_point: Some("main"),
                 cache: None,
                 compilation_options: PipelineCompilationOptions::default(),
@@ -303,7 +303,7 @@ impl ElementWiseOperation {
                 )
             } else {
                 let workgroup_size_x = shape
-                    .get(0)
+                    .first()
                     .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
                     .unwrap_or(1);
                 let workgroup_size_y = shape
