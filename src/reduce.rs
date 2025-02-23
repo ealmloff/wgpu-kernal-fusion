@@ -1,9 +1,12 @@
-use std::{fmt::Display, sync::OnceLock};
+use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    ElementWiseOperation, Tensor, layout::Layout, query::PerformanceQueries, tensor::DataType,
+    ElementWiseOperation, Tensor,
+    layout::Layout,
+    query::PerformanceQueries,
+    tensor::{DataType, padded_tensor_size},
 };
 
 #[derive(Clone)]
@@ -48,22 +51,22 @@ impl<const R: usize> ReduceTensorLayout<R> {
     }
 }
 
-pub struct ReduceOperation {
-    dtype: String,
-    pre_element_wise: ElementWiseOperation,
+pub struct ReduceOperation<T> {
+    pre_element_wise: ElementWiseOperation<T>,
     reduce: ReduceFunction,
-    post_element_wise: ElementWiseOperation,
+    post_element_wise: ElementWiseOperation<T>,
     kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: PhantomData<T>,
 }
 
-impl ReduceOperation {
+impl<T: DataType> ReduceOperation<T> {
     pub fn new(reduce: ReduceFunction) -> Self {
         Self {
-            dtype: "f32".to_string(),
             pre_element_wise: ElementWiseOperation::default(),
             reduce,
             post_element_wise: ElementWiseOperation::default(),
             kernel: OnceLock::new(),
+            datatype: PhantomData,
         }
     }
 
@@ -79,8 +82,11 @@ impl ReduceOperation {
     }
 
     fn tiled_map<const R1: usize, const R2: usize>(&self, blocksize: u32, inline: bool) -> String {
-        let dtype = &self.dtype;
+        let dtype = T::WGSL_TYPE;
         let mut kernel = String::new();
+        if dtype == "f16" {
+            kernel.push_str("enable f16;\n");
+        }
         ReduceTensorLayout::<R2>::wgsl_type_definition(&mut kernel);
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
         // And the mlx implementation https://github.com/ml-explore/mlx/blob/b05bcfd27f5f1293401b74dce02e38c8fd7ef66a/mlx/backend/metal/kernels/arg_reduce.metal
@@ -103,7 +109,7 @@ impl ReduceOperation {
             "var<workgroup> local_data: array<{dtype}, BLOCKSIZE>;\n"
         ));
         if !inline {
-            kernel.push_str(&self.reduce.function(&self.dtype));
+            kernel.push_str(&self.reduce.function(dtype));
         }
         self.pre_element_wise.add_functions(inline, &mut kernel);
         self.post_element_wise.add_functions(inline, &mut kernel);
@@ -137,7 +143,10 @@ impl ReduceOperation {
         }
         kernel.push('\n');
 
-        kernel.push_str(&format!("\tvar merged = {};\n", self.reduce.initial_value));
+        kernel.push_str(&format!(
+            "\tvar merged = {dtype}({});\n",
+            self.reduce.initial_value
+        ));
 
         // First merge values on each thread individually. We divide the column allocated to the thread group into equal sized buckets
         // Round up
@@ -180,7 +189,10 @@ impl ReduceOperation {
         kernel.push_str("\t\t\tmerged = local_data[subgroup_local_id];\n");
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t\telse {\n");
-        kernel.push_str(&format!("\t\t\tmerged = {};\n", self.reduce.initial_value));
+        kernel.push_str(&format!(
+            "\t\t\tmerged = {dtype}({});\n",
+            self.reduce.initial_value
+        ));
         kernel.push_str("\t\t}\n");
         kernel.push_str("\t\tfor (var offset = subgroup_size / 2u; offset > 0u; offset /= 2u) {\n");
         kernel.push_str("\t\t\tlet neighbor = subgroupShuffleDown(merged, offset);\n");
@@ -202,16 +214,16 @@ impl ReduceOperation {
         kernel
     }
 
-    pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
+    pub fn run(&self, tensor: &Tensor<2, T>, dim: usize) -> Tensor<1, T> {
         self.run_with_query(tensor, dim, None)
     }
 
     pub fn run_with_query(
         &self,
-        tensor: &Tensor<2, f32>,
+        tensor: &Tensor<2, T>,
         dim: usize,
         query: Option<&PerformanceQueries>,
-    ) -> Tensor<1, f32> {
+    ) -> Tensor<1, T> {
         let shape = tensor.layout().shape();
         let new_tensor_shape =
             std::array::from_fn(|i| if i < dim { shape[i] } else { shape[i + 1] });
@@ -220,7 +232,9 @@ impl ReduceOperation {
             .wgpu_device()
             .create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: (new_tensor_shape.iter().product::<usize>() * size_of::<f32>()) as u64,
+                size: padded_tensor_size(
+                    (new_tensor_shape.iter().product::<usize>() * size_of::<T>()) as u64,
+                ),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
@@ -233,10 +247,10 @@ impl ReduceOperation {
 
     pub fn run_with_query_and_out_tensor(
         &self,
-        tensor: &Tensor<2, f32>,
+        tensor: &Tensor<2, T>,
         dim: usize,
         query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<1, f32>,
+        output_tensor: &Tensor<1, T>,
     ) {
         assert_eq!(
             *output_tensor.layout().shape(),
@@ -473,7 +487,7 @@ async fn test_reduce_sum() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -501,6 +515,45 @@ async fn test_reduce_sum() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn test_reduce_sum_f16() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [
+        [half::f16::from_f32(1.), half::f16::from_f32(2.)],
+        [half::f16::from_f32(3.), half::f16::from_f32(4.)],
+        [half::f16::from_f32(5.), half::f16::from_f32(6.)],
+    ];
+    let tensor = Tensor::new(&device, &data);
+
+    let add = sum();
+    let reduction = ReduceOperation::new(add);
+    let query = PerformanceQueries::new(&device);
+    let output = reduction.run_with_query(&tensor, 0, Some(&query));
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    println!("{}", query.wait_for_results().await);
+    assert_eq!(output[[0]], half::f16::from_f32(9.));
+    assert_eq!(output[[1]], half::f16::from_f32(12.));
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], half::f16::from_f32(3.));
+    assert_eq!(output[[1]], half::f16::from_f32(7.));
+    assert_eq!(output[[2]], half::f16::from_f32(11.));
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn test_reduce_sliced_sum() {
     use crate::Device;
 
@@ -508,7 +561,7 @@ async fn test_reduce_sliced_sum() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -541,7 +594,7 @@ async fn test_reduce_const_add_then_sum_fused() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -575,7 +628,7 @@ async fn test_reduce_const_sum_then_add_fused() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -613,7 +666,7 @@ async fn test_reduce_max() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -650,7 +703,7 @@ async fn test_reduce_min() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -687,7 +740,7 @@ async fn test_reduce_product() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];

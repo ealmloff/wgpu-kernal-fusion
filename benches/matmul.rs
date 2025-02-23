@@ -22,7 +22,7 @@ fn matmul(c: &mut Criterion) {
         tensor_b: Tensor<2, f32>,
     ) -> Duration {
         let query = PerformanceQueries::new(&device);
-        let tensor = MatMul
+        let tensor = MatMul::new()
             .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
             .await;
         query.wait_for_results().await.elapsed()
@@ -36,7 +36,7 @@ fn matmul(c: &mut Criterion) {
             std::thread::spawn({
                 let device = device.clone();
                 move || loop {
-                    device.wgpu_device().poll(wgpu::Maintain::Wait);
+                    device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);

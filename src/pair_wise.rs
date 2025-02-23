@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::OnceLock};
+use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
@@ -6,21 +6,21 @@ use crate::{
     ElementWiseOperation, Tensor,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
+    tensor::DataType,
 };
 
-pub struct PairWiseOperation {
-    dtype: String,
-    pre_element_wise: [ElementWiseOperation; 2],
+pub struct PairWiseOperation<T> {
+    pre_element_wise: [ElementWiseOperation<T>; 2],
     function: PairWiseFunction,
-    post_element_wise: ElementWiseOperation,
+    post_element_wise: ElementWiseOperation<T>,
     dense_kernel: OnceLock<wgpu::ShaderModule>,
     sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: PhantomData<T>,
 }
 
-impl PairWiseOperation {
+impl<T: DataType> PairWiseOperation<T> {
     pub fn new(function: PairWiseFunction) -> Self {
         Self {
-            dtype: "f32".to_string(),
             pre_element_wise: [
                 ElementWiseOperation::default(),
                 ElementWiseOperation::default(),
@@ -29,6 +29,7 @@ impl PairWiseOperation {
             post_element_wise: ElementWiseOperation::default(),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
+            datatype: PhantomData,
         }
     }
 
@@ -58,7 +59,7 @@ impl PairWiseOperation {
             operation.add_functions(inline, &mut *kernel);
         }
         if !inline {
-            kernel.push_str(&self.function.function(&self.dtype));
+            kernel.push_str(&self.function.function(T::WGSL_TYPE));
         }
         self.post_element_wise.add_functions(inline, &mut *kernel);
     }
@@ -68,9 +69,12 @@ impl PairWiseOperation {
             assert!(R <= 3, "TensorLayout only supports up to 3 rank tensors");
         }
 
-        let dtype = &self.dtype;
+        let dtype = T::WGSL_TYPE;
 
         let mut kernel = String::new();
+        if dtype == "f16" {
+            kernel.push_str("enable f16;\n");
+        }
         TensorLayout::<R>::wgsl_type_definition(&mut kernel);
         kernel.push_str("@group(0) @binding(0) var<uniform> first_tensor_layout: TensorLayout;\n");
         kernel.push_str(&format!(
@@ -112,7 +116,7 @@ impl PairWiseOperation {
                 kernel.push_str(" {\n");
                 kernel.push_str(&format!("\t\t\tvar a = first_tensor[{index}];\n"));
                 kernel.push_str(&format!("\t\t\tvar b = out_tensor[{index}];\n"));
-                kernel.push_str("\t\t\tvar data: f32;\n");
+                kernel.push_str(&format!("\t\t\tvar data: {dtype};\n"));
                 kernel.push_str("\t\t\t");
                 self.modify_data(inline, &mut kernel);
                 kernel.push_str(&format!("\t\t\tout_tensor[{index}] = data;\n"));
@@ -173,7 +177,7 @@ impl PairWiseOperation {
             }
             kernel.push_str("\t\t\tvar a = first_tensor[first_index];\n");
             kernel.push_str(&format!("\t\t\tvar b = out_tensor[out_index];\n"));
-            kernel.push_str("\t\t\tvar data: f32;\n");
+            kernel.push_str(&format!("\t\t\tvar data: {dtype};\n"));
             kernel.push_str("\t\t\t");
             self.modify_data(inline, &mut kernel);
             kernel.push_str("\t\t\tout_tensor[out_index] = data;\n");
@@ -193,19 +197,17 @@ impl PairWiseOperation {
 
         kernel.push_str("}\n");
 
-        println!("{}", kernel);
-
         kernel
     }
 
-    pub fn run<const R: usize>(&self, first: &Tensor<R, f32>, out: &Tensor<R, f32>) {
+    pub fn run<const R: usize>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
         self.run_with_query(first, out, None);
     }
 
     pub fn run_with_query<const R: usize>(
         &self,
-        first: &Tensor<R, f32>,
-        out: &Tensor<R, f32>,
+        first: &Tensor<R, T>,
+        out: &Tensor<R, T>,
         query: Option<&PerformanceQueries>,
     ) {
         assert_eq!(first.layout().shape(), out.layout().shape());
@@ -422,14 +424,14 @@ impl PairWiseFunction {
         )
     }
 
-    pub fn run<const R: usize>(&self, first: &Tensor<R, f32>, out: &Tensor<R, f32>) {
+    pub fn run<const R: usize, T: DataType>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
         self.run_with_query(first, out, None);
     }
 
-    pub fn run_with_query<const R: usize>(
+    pub fn run_with_query<const R: usize, T: DataType>(
         &self,
-        first: &Tensor<R, f32>,
-        out: &Tensor<R, f32>,
+        first: &Tensor<R, T>,
+        out: &Tensor<R, T>,
         query: Option<&PerformanceQueries>,
     ) {
         PairWiseOperation::new(self.clone()).run_with_query(first, out, query);
@@ -449,7 +451,7 @@ async fn test_pair_wise_add() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -473,6 +475,45 @@ async fn test_pair_wise_add() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn test_pair_wise_add_f16() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data_a = [
+        [half::f16::from_f32(1.), half::f16::from_f32(2.)],
+        [half::f16::from_f32(3.), half::f16::from_f32(4.)],
+        [half::f16::from_f32(5.), half::f16::from_f32(6.)],
+    ];
+    let data_b = [
+        [half::f16::from_f32(1.), half::f16::from_f32(2.)],
+        [half::f16::from_f32(3.), half::f16::from_f32(4.)],
+        [half::f16::from_f32(5.), half::f16::from_f32(6.)],
+    ];
+    let tensor_a = Tensor::new(&device, &data_a);
+    let tensor_b = Tensor::new(&device, &data_b);
+    let query = PerformanceQueries::new(&device);
+
+    PairWiseOperation::new(add()).run_with_query(&tensor_a, &tensor_b, Some(&query));
+    let as_slice = tensor_b.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+    println!("{}", query.wait_for_results().await);
+
+    assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1. + 1.));
+    assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2. + 2.));
+    assert_eq!(as_slice[[1, 0]], half::f16::from_f32(3. + 3.));
+    assert_eq!(as_slice[[1, 1]], half::f16::from_f32(4. + 4.));
+    assert_eq!(as_slice[[2, 0]], half::f16::from_f32(5. + 5.));
+    assert_eq!(as_slice[[2, 1]], half::f16::from_f32(6. + 6.));
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn test_pair_wise_add_const_mul_const_add_fused() {
     use crate::{Device, add_const, mul_const};
 
@@ -480,7 +521,7 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -512,7 +553,7 @@ async fn test_pair_wise_add_sub_const_fused() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -543,7 +584,7 @@ async fn test_pair_wise_add_sparse() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -575,7 +616,7 @@ async fn test_pair_wise_sub() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -608,7 +649,7 @@ async fn test_pair_wise_mul() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -641,7 +682,7 @@ async fn test_pair_wise_div() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];
@@ -674,7 +715,7 @@ async fn test_pair_wise_pow() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1., 2.], [3., 4.], [5., 6.]];

@@ -22,7 +22,7 @@ fn bench_add(c: &mut Criterion) {
         device: Device,
         first: Tensor<2, f32>,
         second: Tensor<2, f32>,
-        op: Arc<PairWiseOperation>,
+        op: Arc<PairWiseOperation<f32>>,
     ) -> Duration {
         let query = PerformanceQueries::new(&device);
         op.run_with_query(&first, &second, Some(&query));
@@ -36,7 +36,7 @@ fn bench_add(c: &mut Criterion) {
             std::thread::spawn({
                 let device = device.clone();
                 move || loop {
-                    device.wgpu_device().poll(wgpu::Maintain::Wait);
+                    device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);

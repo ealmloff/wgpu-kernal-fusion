@@ -1,4 +1,4 @@
-use std::{fmt::Display, sync::OnceLock};
+use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
@@ -6,43 +6,43 @@ use crate::{
     Tensor,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
+    tensor::DataType,
 };
 
 #[cfg(test)]
 use crate::Device;
 
-pub struct ElementWiseOperation {
-    dtype: String,
+pub struct ElementWiseOperation<T> {
     functions: Vec<ElementWiseFunction>,
     dense_kernel: OnceLock<wgpu::ShaderModule>,
     sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: PhantomData<T>,
 }
 
-impl Default for ElementWiseOperation {
+impl<T: DataType> Default for ElementWiseOperation<T> {
     fn default() -> Self {
         Self::new([])
     }
 }
 
-impl ElementWiseOperation {
+impl<T: DataType> ElementWiseOperation<T> {
     pub fn new(functions: impl IntoIterator<Item = ElementWiseFunction>) -> Self {
         Self {
-            dtype: "f32".to_string(),
             functions: functions.into_iter().collect(),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
+            datatype: PhantomData,
         }
     }
 
     pub fn then(self, other: ElementWiseFunction) -> Self {
         let mut functions = self.functions;
         functions.push(other);
-        let dtype = self.dtype;
         Self {
-            dtype,
             functions,
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
+            datatype: PhantomData,
         }
     }
 
@@ -69,7 +69,7 @@ impl ElementWiseOperation {
     pub(crate) fn add_functions(&self, inline: bool, kernel: &mut String) {
         if !inline {
             for function in &self.functions {
-                kernel.push_str(&function.function(&self.dtype));
+                kernel.push_str(&function.function(T::WGSL_TYPE));
             }
         }
     }
@@ -79,9 +79,12 @@ impl ElementWiseOperation {
             assert!(R <= 3, "TensorLayout only supports up to 3 rank tensors");
         }
 
-        let dtype = &self.dtype;
+        let dtype = T::WGSL_TYPE;
 
         let mut kernel = String::new();
+        if dtype == "f16" {
+            kernel.push_str("enable f16;\n");
+        }
         TensorLayout::<R>::wgsl_type_definition(&mut kernel);
         kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
         kernel.push_str(&format!(
@@ -190,13 +193,13 @@ impl ElementWiseOperation {
         kernel
     }
 
-    pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
+    pub fn run<const R: usize>(&self, tensor: &Tensor<R, T>) {
         self.run_with_query(tensor, None);
     }
 
     pub fn run_with_query<const R: usize>(
         &self,
-        tensor: &Tensor<R, f32>,
+        tensor: &Tensor<R, T>,
         query: Option<&PerformanceQueries>,
     ) {
         let contiguous = tensor.layout().is_contiguous();
@@ -376,13 +379,13 @@ impl ElementWiseFunction {
         )
     }
 
-    pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
+    pub fn run<const R: usize, T: DataType>(&self, tensor: &Tensor<R, T>) {
         self.run_with_query(tensor, None)
     }
 
-    pub fn run_with_query<const R: usize>(
+    pub fn run_with_query<const R: usize, T: DataType>(
         &self,
-        tensor: &Tensor<R, f32>,
+        tensor: &Tensor<R, T>,
         query: Option<&PerformanceQueries>,
     ) {
         ElementWiseOperation::new([self.clone()]).run_with_query(tensor, query)
@@ -400,7 +403,7 @@ async fn test_add_const() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
 
@@ -450,12 +453,63 @@ async fn test_add_const() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn test_add_const_f16() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+
+    let data = [
+        [
+            [half::f16::from_f32(1.), half::f16::from_f32(2.)],
+            [half::f16::from_f32(1.), half::f16::from_f32(2.)],
+        ],
+        [
+            [half::f16::from_f32(3.), half::f16::from_f32(4.)],
+            [half::f16::from_f32(3.), half::f16::from_f32(4.)],
+        ],
+        [
+            [half::f16::from_f32(5.), half::f16::from_f32(6.)],
+            [half::f16::from_f32(5.), half::f16::from_f32(6.)],
+        ],
+    ];
+    let tensor = Tensor::new(&device, &data);
+    let query = PerformanceQueries::new(&device);
+
+    add_const(1.0).run_with_query(&tensor, Some(&query));
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    println!("{}", query.wait_for_results().await);
+    let result = [
+        [
+            [half::f16::from_f32(2.0), half::f16::from_f32(3.0)],
+            [half::f16::from_f32(2.0), half::f16::from_f32(3.0)],
+        ],
+        [
+            [half::f16::from_f32(4.0), half::f16::from_f32(5.0)],
+            [half::f16::from_f32(4.0), half::f16::from_f32(5.0)],
+        ],
+        [
+            [half::f16::from_f32(6.0), half::f16::from_f32(7.0)],
+            [half::f16::from_f32(6.0), half::f16::from_f32(7.0)],
+        ],
+    ];
+    let result = Tensor::new(&device, &result);
+    assert_eq!(output, result.as_slice().await.unwrap());
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn test_add_const_sliced() {
     let device = Device::new().await.unwrap();
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -481,7 +535,7 @@ async fn test_add_const_large() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     const BUF_SIZE: usize = 0x01000000;
@@ -503,7 +557,7 @@ async fn test_merge_add_const() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -535,7 +589,7 @@ async fn test_sub_const() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -564,7 +618,7 @@ async fn test_mul_const() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -593,7 +647,7 @@ async fn test_div_const() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -622,7 +676,7 @@ async fn test_exp() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -651,7 +705,7 @@ async fn test_exp2() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -680,7 +734,7 @@ async fn test_log() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -709,7 +763,7 @@ async fn test_log2() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -738,7 +792,7 @@ async fn test_sqrt() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -767,7 +821,7 @@ async fn test_sin() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -796,7 +850,7 @@ async fn test_cos() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -825,7 +879,7 @@ async fn test_tan() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -854,7 +908,7 @@ async fn test_asin() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -887,7 +941,7 @@ async fn test_acos() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -920,7 +974,7 @@ async fn test_atan() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1. / 1., 1. / 2.], [1. / 3., 1. / 4.], [1. / 5., 1. / 6.]];
@@ -949,7 +1003,7 @@ async fn test_sinh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -978,7 +1032,7 @@ async fn test_cosh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -1007,7 +1061,7 @@ async fn test_tanh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -1036,7 +1090,7 @@ async fn test_asinh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -1069,7 +1123,7 @@ async fn test_acosh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -1102,7 +1156,7 @@ async fn test_atanh() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -1135,7 +1189,7 @@ async fn test_abs() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., -2.], [-3., 4.], [5., -6.]];

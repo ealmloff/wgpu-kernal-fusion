@@ -1,48 +1,57 @@
+use std::{marker::PhantomData, sync::OnceLock};
+
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
-use crate::{Device, Tensor, query::PerformanceQueries};
+use crate::{
+    Device, Tensor,
+    query::PerformanceQueries,
+    tensor::{DataType, padded_tensor_size},
+};
 
-pub struct MatMul;
+pub struct MatMul<T> {
+    kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: PhantomData<T>,
+}
 
-impl Default for MatMul {
+impl<T> Default for MatMul<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MatMul {
+impl<T> MatMul<T> {
     pub const fn new() -> Self {
-        Self
+        Self {
+            kernel: OnceLock::new(),
+            datatype: PhantomData,
+        }
     }
 }
 
-impl MatMul {
-    fn compile(&self, device: &Device) -> wgpu::ShaderModule {
-        let source = template("f32");
-        device.create_shader_module(source)
+impl<T: DataType> MatMul<T> {
+    fn compile(&self, device: &Device) -> &wgpu::ShaderModule {
+        self.kernel.get_or_init(|| {
+            let source = template(T::WGSL_TYPE);
+            device.create_shader_module(source)
+        })
     }
 
-    pub async fn run(
-        &self,
-        device: &Device,
-        a: &Tensor<2, f32>,
-        b: &Tensor<2, f32>,
-    ) -> Tensor<2, f32> {
+    pub async fn run(&self, device: &Device, a: &Tensor<2, T>, b: &Tensor<2, T>) -> Tensor<2, T> {
         self.run_with_query(device, a, b, None).await
     }
 
     pub async fn run_with_query(
         &self,
         device: &Device,
-        a: &Tensor<2, f32>,
-        b: &Tensor<2, f32>,
+        a: &Tensor<2, T>,
+        b: &Tensor<2, T>,
         query: Option<&PerformanceQueries>,
-    ) -> Tensor<2, f32> {
+    ) -> Tensor<2, T> {
         let a_shape = a.layout().shape();
         let b_shape = b.layout().shape();
         let output_buf = device.wgpu_device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (a_shape[0] * b_shape[1] * size_of::<f32>()) as u64,
+            size: padded_tensor_size((a_shape[0] * b_shape[1] * size_of::<T>()) as u64),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -55,10 +64,10 @@ impl MatMul {
     pub async fn run_with_query_and_out_tensor(
         &self,
         device: &Device,
-        a: &Tensor<2, f32>,
-        b: &Tensor<2, f32>,
+        a: &Tensor<2, T>,
+        b: &Tensor<2, T>,
         query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<2, f32>,
+        output_tensor: &Tensor<2, T>,
     ) {
         assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
         let module = self.compile(device);
@@ -202,7 +211,7 @@ async fn test_matmul() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data_a = [[1.], [3.]];
@@ -211,7 +220,7 @@ async fn test_matmul() {
     let tensor_b = Tensor::new(&device, &data_b);
 
     let query = PerformanceQueries::new(&device);
-    let tensor = MatMul
+    let tensor = MatMul::new()
         .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
         .await;
     let as_slice = tensor.as_slice().await.unwrap();
@@ -226,6 +235,35 @@ async fn test_matmul() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn test_matmul_f16() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data_a = [[half::f16::from_f32(1.)], [half::f16::from_f32(3.)]];
+    let data_b = [[half::f16::from_f32(1.), half::f16::from_f32(2.)]];
+    let tensor_a = Tensor::new(&device, &data_a);
+    let tensor_b = Tensor::new(&device, &data_b);
+
+    let query = PerformanceQueries::new(&device);
+    let tensor = MatMul::new()
+        .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
+        .await;
+    let as_slice = tensor.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+    println!("{}", query.wait_for_results().await);
+
+    assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1.));
+    assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2.));
+    assert_eq!(as_slice[[1, 0]], half::f16::from_f32(3.));
+    assert_eq!(as_slice[[1, 1]], half::f16::from_f32(6.));
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn fuzz_matmul() {
     use rand::Rng;
 
@@ -233,7 +271,7 @@ async fn fuzz_matmul() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let max_size = if cfg!(debug_assertions) { 5 } else { 125 };
@@ -269,7 +307,7 @@ async fn fuzz_matmul() {
 
         let dot = ndarray_a.dot(&ndarray_b);
 
-        let tensor = MatMul.run(&device, &tensor_a, &tensor_b).await;
+        let tensor = MatMul::new().run(&device, &tensor_a, &tensor_b).await;
         let as_slice = tensor.as_slice().await.unwrap();
         for i in 0..size1 {
             for j in 0..size3 {
@@ -282,7 +320,7 @@ async fn fuzz_matmul() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let tensor = MatMul.run(&device, &tensor_a, &tensor_b).await;
+    let tensor = MatMul::new().run(&device, &tensor_a, &tensor_b).await;
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
@@ -293,9 +331,12 @@ async fn fuzz_matmul() {
 }
 
 fn template(dtype: &str) -> String {
+    let enable_fp16 = if dtype == "f16" { "enable f16;\n" } else { "" };
+
+    // From https://github.com/zanussbaum/surfgrad/blob/4f696e3ddcbeb2c7686bc7dbb83c3dbb89595591/src/shaders/matmul.ts
+    // Article https://www.nuss-and-bolts.com/p/optimizing-a-webgpu-matmul-kernel
     format!(
-        r#"// From https://github.com/zanussbaum/surfgrad/blob/4f696e3ddcbeb2c7686bc7dbb83c3dbb89595591/src/shaders/matmul.ts
-// Article https://www.nuss-and-bolts.com/p/optimizing-a-webgpu-matmul-kernel
+        r#"{enable_fp16}
 
 struct Dimensions {{
   M: u32,

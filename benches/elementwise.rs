@@ -21,7 +21,7 @@ fn bench_add_const(c: &mut Criterion) {
     async fn run_op(
         device: Device,
         tensor: Tensor<2, f32>,
-        op: Arc<ElementWiseOperation>,
+        op: Arc<ElementWiseOperation<f32>>,
     ) -> Duration {
         let query = PerformanceQueries::new(&device);
         op.run_with_query(&tensor, Some(&query));
@@ -35,7 +35,7 @@ fn bench_add_const(c: &mut Criterion) {
             std::thread::spawn({
                 let device = device.clone();
                 move || loop {
-                    device.wgpu_device().poll(wgpu::Maintain::Wait);
+                    device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);

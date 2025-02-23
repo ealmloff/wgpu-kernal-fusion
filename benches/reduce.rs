@@ -19,7 +19,11 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn bench_sum_reduce(c: &mut Criterion) {
-    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ReduceOperation>) -> Duration {
+    async fn run_op(
+        device: Device,
+        tensor: Tensor<2, f32>,
+        op: Arc<ReduceOperation<f32>>,
+    ) -> Duration {
         let query = PerformanceQueries::new(&device);
         op.run_with_query(&tensor, 0, Some(&query));
         query.wait_for_results().await.elapsed()
@@ -32,7 +36,7 @@ fn bench_sum_reduce(c: &mut Criterion) {
             std::thread::spawn({
                 let device = device.clone();
                 move || loop {
-                    device.wgpu_device().poll(wgpu::Maintain::Wait);
+                    device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);

@@ -9,9 +9,17 @@ use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
 use crate::{Device, layout::Layout};
 
-pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {}
+pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
+    const WGSL_TYPE: &'static str;
+}
 
-impl DataType for f32 {}
+impl DataType for f32 {
+    const WGSL_TYPE: &'static str = "f32";
+}
+
+impl DataType for half::f16 {
+    const WGSL_TYPE: &'static str = "f16";
+}
 
 pub struct Tensor<const R: usize, D> {
     device: Device,
@@ -123,12 +131,7 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         ) -> (wgpu::Buffer, u64) {
             let size = element_size * shape.iter().copied().product::<usize>() as u64;
 
-            // Valid vulkan usage is
-            // 1. buffer size must be a multiple of COPY_BUFFER_ALIGNMENT.
-            // 2. buffer size must be greater than 0.
-            // Therefore we round the value up to the nearest multiple, and ensure it's at least COPY_BUFFER_ALIGNMENT.
-            let align_mask = COPY_BUFFER_ALIGNMENT - 1;
-            let padded_size = ((size + align_mask) & !align_mask).max(COPY_BUFFER_ALIGNMENT);
+            let padded_size = padded_tensor_size(size);
 
             let wgt_descriptor = BufferDescriptor {
                 label: None,
@@ -205,7 +208,7 @@ async fn test_tensor_slice() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
@@ -296,6 +299,16 @@ impl<const R: usize, D: DataType + PartialEq> PartialEq for TensorSlice<R, D> {
     }
 }
 
+pub(crate) fn padded_tensor_size(size: u64) -> u64 {
+    // Valid vulkan usage is
+    // 1. buffer size must be a multiple of COPY_BUFFER_ALIGNMENT.
+    // 2. buffer size must be greater than 0.
+    // Therefore we round the value up to the nearest multiple, and ensure it's at least COPY_BUFFER_ALIGNMENT.
+    let align_mask = COPY_BUFFER_ALIGNMENT - 1;
+    let padded_size = ((size + align_mask) & !align_mask).max(COPY_BUFFER_ALIGNMENT);
+    padded_size
+}
+
 #[cfg(test)]
 #[tokio::test]
 async fn test_tensor_compare() {
@@ -303,7 +316,7 @@ async fn test_tensor_compare() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [
@@ -371,7 +384,7 @@ async fn test_tensor() {
     std::thread::spawn({
         let device = device.clone();
         move || loop {
-            device.wgpu_device().poll(wgpu::Maintain::Wait);
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
     let data = [[1., 2.], [3., 4.], [5., 6.]];
