@@ -1,9 +1,10 @@
 #![allow(unused)]
 use std::sync::Arc;
+use std::time::Duration;
 
-use criterion::BatchSize;
+use criterion::{black_box, BatchSize};
 use futures::executor::block_on;
-use wgpu_compute::{add_const, mul_const, ElementWiseFunction, ElementWiseOperation};
+use wgpu_compute::{add_const, mul_const, ElementWiseFunction, ElementWiseOperation, PerformanceQueries};
 use wgpu_compute::{Device, MatMul, Tensor};
 
 use criterion::BenchmarkId;
@@ -15,9 +16,10 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
 
 fn fused(c: &mut Criterion) {
-    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ElementWiseOperation>) {
-        op.run(&tensor);
-        let _ = tensor.as_slice().await.unwrap();
+    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ElementWiseOperation>) -> Duration {
+        let query = PerformanceQueries::new(&device);
+        op.run_with_query(&tensor, Some(&query));
+        query.wait_for_results().await.elapsed()
     }
 
     async fn add_const_separate(
@@ -25,10 +27,11 @@ fn fused(c: &mut Criterion) {
         tensor: Tensor<2, f32>,
         op1: Arc<ElementWiseOperation>,
         op2: Arc<ElementWiseOperation>,
-    ) {
-        op1.run(&tensor);
-        op2.run(&tensor);
-        let _ = tensor.as_slice().await.unwrap();
+    ) -> Duration {
+        let query = PerformanceQueries::new(&device);
+        op1.run_with_query(&tensor, Some(&query));
+        op2.run_with_query(&tensor, Some(&query));
+        query.wait_for_results().await.elapsed()
     }
 
     {
@@ -54,11 +57,15 @@ fn fused(c: &mut Criterion) {
                 &size,
                 move |b, &s| {
                     let device = device.clone();
-                    b.to_async(FuturesExecutor).iter_batched(
-                        || (tensor.clone(), op.clone()),
-                        |(tensor, op)| run_op(device.clone(), tensor, op.clone()),
-                        BatchSize::LargeInput,
-                    );
+                    b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                        let mut sum = Duration::ZERO;
+                        for _ in 0..iters {
+                            let tensor = tensor.clone();
+                            let op = op.clone();
+                            sum += run_op(device.clone(), tensor, op).await; 
+                        }
+                        sum
+                    })
                 },
             );
         }
@@ -85,11 +92,13 @@ fn fused(c: &mut Criterion) {
                 &size,
                 move |b, &s| {
                     let device = device.clone();
-                    b.to_async(FuturesExecutor).iter_batched(
-                        || (tensor.clone(), op1.clone(), op2.clone()),
-                        |(tensor, op1, op2)| add_const_separate(device.clone(), tensor, op1, op2),
-                        BatchSize::LargeInput,
-                    );
+                    b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                        let mut sum = Duration::ZERO;
+                        for _ in 0..iters {
+                            sum += add_const_separate(device.clone(), tensor.clone(), op1.clone(), op2.clone()).await;
+                        }
+                        sum
+                    })
                 },
             );
         }

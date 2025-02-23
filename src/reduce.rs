@@ -2,7 +2,9 @@ use std::{fmt::Display, sync::OnceLock};
 
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{layout::Layout, tensor::DataType, ElementWiseOperation, Tensor};
+use crate::{
+    layout::Layout, query::PerformanceQueries, tensor::DataType, ElementWiseOperation, Tensor,
+};
 
 #[derive(Clone)]
 pub(crate) struct ReduceTensorLayout<const R: usize> {
@@ -201,6 +203,15 @@ impl ReduceOperation {
     }
 
     pub fn run(&self, tensor: &Tensor<2, f32>, dim: usize) -> Tensor<1, f32> {
+        self.run_with_query(tensor, dim, None)
+    }
+
+    pub fn run_with_query(
+        &self,
+        tensor: &Tensor<2, f32>,
+        dim: usize,
+        query: Option<&PerformanceQueries>,
+    ) -> Tensor<1, f32> {
         let limits = tensor.device().wgpu_device().limits();
         let max_blocksize = (tensor.layout().shape()[dim] as u32)
             .min(limits.max_compute_workgroup_size_x)
@@ -371,11 +382,17 @@ impl ReduceOperation {
             .wgpu_device()
             .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
+            });
             cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
             let workgroup_size = output_tensor.layout().shape().iter().product::<usize>() as u32;
             cpass.dispatch_workgroups(workgroup_size, 1, 1)
+        }
+        if let Some(query) = query {
+            query.resolve(&mut encoder);
         }
         tensor.device().wgpu_queue().submit(Some(encoder.finish()));
 
@@ -441,10 +458,12 @@ async fn test_reduce_sum() {
 
     let add = sum();
     let reduction = ReduceOperation::new(add);
-    let output = reduction.run(&tensor, 0);
+    let query = PerformanceQueries::new(&device);
+    let output = reduction.run_with_query(&tensor, 0, Some(&query));
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
+    println!("{}", query.wait_for_results().await);
     assert_eq!(output[[0]], 9.);
     assert_eq!(output[[1]], 12.);
 

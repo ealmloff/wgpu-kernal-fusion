@@ -1,9 +1,12 @@
 #![allow(unused)]
 use std::sync::Arc;
+use std::time::Duration;
 
-use criterion::BatchSize;
+use criterion::{black_box, BatchSize};
 use futures::executor::block_on;
-use wgpu_compute::{add_const, mul_const, ElementWiseFunction, ElementWiseOperation};
+use wgpu_compute::{
+    add_const, mul_const, ElementWiseFunction, ElementWiseOperation, PerformanceQueries,
+};
 use wgpu_compute::{Device, MatMul, Tensor};
 
 use criterion::BenchmarkId;
@@ -15,8 +18,13 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
 
 fn bench_add_const(c: &mut Criterion) {
-    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ElementWiseOperation>) {
-        op.run(&tensor);
+    async fn run_op(
+        device: Device,
+        tensor: Tensor<2, f32>,
+        op: Arc<ElementWiseOperation>,
+        query: &PerformanceQueries,
+    ) {
+        op.run_with_query(&tensor, Some(query));
         let _ = tensor.as_slice().await.unwrap();
     }
 
@@ -39,11 +47,17 @@ fn bench_add_const(c: &mut Criterion) {
                 &size,
                 move |b, &s| {
                     let device = device.clone();
-                    b.to_async(FuturesExecutor).iter_batched(
-                        || (tensor.clone(), op.clone()),
-                        |(tensor, op)| run_op(device.clone(), tensor, op),
-                        BatchSize::LargeInput,
-                    );
+                    b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                        let mut sum = Duration::ZERO;
+                        for _ in 0..iters {
+                            let tensor = tensor.clone();
+                            let op = op.clone();
+                            let query = PerformanceQueries::new(&device);
+                            black_box(run_op(device.clone(), tensor, op, &query).await);
+                            sum += query.wait_for_results().await.elapsed();
+                        }
+                        sum
+                    })
                 },
             );
         }

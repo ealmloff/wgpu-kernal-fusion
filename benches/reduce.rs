@@ -1,10 +1,11 @@
 #![allow(unused)]
 use std::sync::Arc;
+use std::time::Duration;
 
 use criterion::BatchSize;
 use futures::executor::block_on;
 use ndarray::Axis;
-use wgpu_compute::{sum, ElementWiseFunction, ElementWiseOperation, ReduceOperation};
+use wgpu_compute::{sum, ElementWiseFunction, ElementWiseOperation, PerformanceQueries, ReduceOperation};
 use wgpu_compute::{Device, MatMul, Tensor};
 
 use criterion::BenchmarkId;
@@ -16,9 +17,10 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
 
 fn bench_sum_reduce(c: &mut Criterion) {
-    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ReduceOperation>) {
-        op.run(&tensor, 0);
-        let _ = tensor.as_slice().await.unwrap();
+    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ReduceOperation>) -> Duration {
+        let query = PerformanceQueries::new(&device);
+        op.run_with_query(&tensor, 0, Some(&query));
+        query.wait_for_results().await.elapsed()
     }
 
     {
@@ -37,11 +39,15 @@ fn bench_sum_reduce(c: &mut Criterion) {
 
             group.bench_with_input(BenchmarkId::new("sum-wgpu", size), &size, move |b, &s| {
                 let device = device.clone();
-                b.to_async(FuturesExecutor).iter_batched(
-                    || (tensor.clone(), op.clone()),
-                    |(tensor, op)| run_op(device.clone(), tensor, op),
-                    BatchSize::LargeInput,
-                );
+                b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                    let mut sum = Duration::ZERO;
+                    for _ in 0..iters {
+                        let tensor = tensor.clone();
+                        let op = op.clone();
+                        sum += run_op(device.clone(), tensor, op).await;
+                    }
+                    sum
+                })
             });
         }
     }

@@ -1,6 +1,6 @@
 use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
-use crate::{Device, Tensor};
+use crate::{query::PerformanceQueries, Device, Tensor};
 
 pub struct MatMul;
 
@@ -27,6 +27,16 @@ impl MatMul {
         device: &Device,
         a: &Tensor<2, f32>,
         b: &Tensor<2, f32>,
+    ) -> Tensor<2, f32> {
+        self.run_with_query(device, a, b, None).await
+    }
+
+    pub async fn run_with_query(
+        &self,
+        device: &Device,
+        a: &Tensor<2, f32>,
+        b: &Tensor<2, f32>,
+        query: Option<&PerformanceQueries>,
     ) -> Tensor<2, f32> {
         assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
         let module = self.compile(device);
@@ -149,7 +159,10 @@ impl MatMul {
             .wgpu_device()
             .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
+            });
             cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
             const WORKGROUP_SIZE: u32 = 16;
@@ -157,6 +170,9 @@ impl MatMul {
             let workgroup_size_a = (a_shape[0] as u32).div_ceil(TILE_SIZE * WORKGROUP_SIZE);
             let workgroup_size_b = (b_shape[1] as u32).div_ceil(TILE_SIZE * WORKGROUP_SIZE);
             cpass.dispatch_workgroups(workgroup_size_a, workgroup_size_b, 1);
+        }
+        if let Some(query) = query {
+            query.resolve(&mut encoder);
         }
         device.wgpu_queue().submit(Some(encoder.finish()));
 
@@ -179,9 +195,11 @@ async fn test_matmul() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let tensor = MatMul.run(&device, &tensor_a, &tensor_b).await;
+    let query = PerformanceQueries::new(&device);
+    let tensor = MatMul.run_with_query(&device, &tensor_a, &tensor_b, Some(&query)).await;
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
+    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], 1.);
     assert_eq!(as_slice[[0, 1]], 2.);

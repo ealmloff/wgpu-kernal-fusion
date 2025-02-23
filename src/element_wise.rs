@@ -4,6 +4,7 @@ use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
 use crate::{
     layout::{TensorLayout, TILE_SIZE},
+    query::PerformanceQueries,
     Tensor,
 };
 
@@ -190,6 +191,14 @@ impl ElementWiseOperation {
     }
 
     pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
+        self.run_with_query(tensor, None);
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        tensor: &Tensor<R, f32>,
+        query: Option<&PerformanceQueries>,
+    ) {
         let contiguous = tensor.layout().is_contiguous();
         let max_blocksize = if contiguous {
             256
@@ -292,7 +301,10 @@ impl ElementWiseOperation {
             .wgpu_device()
             .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
+            });
             cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
             let layout = tensor.layout();
@@ -323,6 +335,9 @@ impl ElementWiseOperation {
                 (workgroup_size_x, workgroup_size_y, workgroup_size_z)
             };
             cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
+        }
+        if let Some(query) = query {
+            query.resolve(&mut encoder);
         }
         tensor.device().wgpu_queue().submit(Some(encoder.finish()));
     }
@@ -362,7 +377,15 @@ impl ElementWiseFunction {
     }
 
     pub fn run<const R: usize>(&self, tensor: &Tensor<R, f32>) {
-        ElementWiseOperation::new([self.clone()]).run(tensor);
+        self.run_with_query(tensor, None)
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        tensor: &Tensor<R, f32>,
+        query: Option<&PerformanceQueries>,
+    ) {
+        ElementWiseOperation::new([self.clone()]).run_with_query(tensor, query)
     }
 }
 
@@ -387,11 +410,13 @@ async fn test_add_const() {
         [[5., 6.], [5., 6.]],
     ];
     let tensor = Tensor::new(&device, &data);
+    let query = PerformanceQueries::new(&device);
 
-    add_const(1.0).run(&tensor);
+    add_const(1.0).run_with_query(&tensor, Some(&query));
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
+    println!("{}", query.wait_for_results().await);
     let result = [
         [[2.0, 3.0], [2.0, 3.0]],
         [[4.0, 5.0], [4.0, 5.0]],

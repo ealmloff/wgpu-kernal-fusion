@@ -4,6 +4,7 @@ use wgpu::{util::DeviceExt, PipelineCompilationOptions};
 
 use crate::{
     layout::{TensorLayout, TILE_SIZE},
+    query::PerformanceQueries,
     ElementWiseOperation, Tensor,
 };
 
@@ -198,6 +199,15 @@ impl PairWiseOperation {
     }
 
     pub fn run<const R: usize>(&self, first: &Tensor<R, f32>, out: &Tensor<R, f32>) {
+        self.run_with_query(first, out, None);
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        first: &Tensor<R, f32>,
+        out: &Tensor<R, f32>,
+        query: Option<&PerformanceQueries>,
+    ) {
         assert_eq!(first.layout().shape(), out.layout().shape());
         let contiguous = first.layout().is_contiguous() && out.layout().is_contiguous();
         let max_blocksize = if contiguous {
@@ -337,7 +347,10 @@ impl PairWiseOperation {
             .wgpu_device()
             .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&Default::default());
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
+            });
             cpass.set_pipeline(&pipeline);
             cpass.set_bind_group(0, &bind_group, &[]);
             let layout = first.layout();
@@ -368,6 +381,9 @@ impl PairWiseOperation {
                 (workgroup_size_x, workgroup_size_y, workgroup_size_z)
             };
             cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
+        }
+        if let Some(query) = query {
+            query.resolve(&mut encoder);
         }
         device.wgpu_queue().submit(Some(encoder.finish()));
     }
@@ -407,7 +423,16 @@ impl PairWiseFunction {
     }
 
     pub fn run<const R: usize>(&self, first: &Tensor<R, f32>, out: &Tensor<R, f32>) {
-        PairWiseOperation::new(self.clone()).run(first, out);
+        self.run_with_query(first, out, None);
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        first: &Tensor<R, f32>,
+        out: &Tensor<R, f32>,
+        query: Option<&PerformanceQueries>,
+    ) {
+        PairWiseOperation::new(self.clone()).run_with_query(first, out, query);
     }
 }
 
@@ -431,10 +456,12 @@ async fn test_pair_wise_add() {
     let data_b = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
+    let query = PerformanceQueries::new(&device);
 
-    PairWiseOperation::new(add()).run(&tensor_a, &tensor_b);
+    PairWiseOperation::new(add()).run_with_query(&tensor_a, &tensor_b, Some(&query));
     let as_slice = tensor_b.as_slice().await.unwrap();
     println!("{:?}", as_slice);
+    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], 1. + 1.);
     assert_eq!(as_slice[[0, 1]], 2. + 2.);

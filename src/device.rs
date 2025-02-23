@@ -17,7 +17,7 @@ impl Device {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::SUBGROUP,
+                    required_features: wgpu::Features::SUBGROUP | wgpu::Features::TIMESTAMP_QUERY,
                     ..Default::default()
                 },
                 None,

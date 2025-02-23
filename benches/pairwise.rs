@@ -1,9 +1,12 @@
 #![allow(unused)]
 use std::sync::Arc;
+use std::time::Duration;
 
 use criterion::BatchSize;
 use futures::executor::block_on;
-use wgpu_compute::{add, ElementWiseFunction, ElementWiseOperation, PairWiseOperation};
+use wgpu_compute::{
+    add, ElementWiseFunction, ElementWiseOperation, PairWiseOperation, PerformanceQueries,
+};
 use wgpu_compute::{Device, MatMul, Tensor};
 
 use criterion::BenchmarkId;
@@ -20,9 +23,10 @@ fn bench_add(c: &mut Criterion) {
         first: Tensor<2, f32>,
         second: Tensor<2, f32>,
         op: Arc<PairWiseOperation>,
-    ) {
-        op.run(&first, &second);
-        let _ = second.as_slice().await.unwrap();
+    ) -> Duration {
+        let query = PerformanceQueries::new(&device);
+        op.run_with_query(&first, &second, Some(&query));
+        query.wait_for_results().await.elapsed()
     }
 
     {
@@ -41,11 +45,14 @@ fn bench_add(c: &mut Criterion) {
 
             group.bench_with_input(BenchmarkId::new("add-wgpu", size), &size, move |b, &s| {
                 let device = device.clone();
-                b.to_async(FuturesExecutor).iter_batched(
-                    || (tensor.clone(), tensor.clone(), op.clone()),
-                    |(first, second, op)| run_op(device.clone(), first, second, op),
-                    BatchSize::LargeInput,
-                );
+                b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                    let mut sum = Duration::ZERO;
+                    for _ in 0..iters {
+                        sum += run_op(device.clone(), tensor.clone(), tensor.clone(), op.clone())
+                            .await;
+                    }
+                    sum
+                })
             });
         }
     }
