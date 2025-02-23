@@ -22,7 +22,9 @@ fn matmul(c: &mut Criterion) {
         tensor_b: Tensor<2, f32>,
     ) -> Duration {
         let query = PerformanceQueries::new(&device);
-        let tensor = MatMul.run_with_query(&device, &tensor_a, &tensor_b, Some(&query)).await;
+        let tensor = MatMul
+            .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
+            .await;
         query.wait_for_results().await.elapsed()
     }
 

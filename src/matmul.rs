@@ -38,9 +38,6 @@ impl MatMul {
         b: &Tensor<2, f32>,
         query: Option<&PerformanceQueries>,
     ) -> Tensor<2, f32> {
-        assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
-        let module = self.compile(device);
-
         let a_shape = a.layout().shape();
         let b_shape = b.layout().shape();
         let output_buf = device.wgpu_device().create_buffer(&wgpu::BufferDescriptor {
@@ -49,6 +46,26 @@ impl MatMul {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let output_tensor = Tensor::new_from_buffer(device, output_buf, [a_shape[0], b_shape[1]]);
+        self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor)
+            .await;
+        output_tensor
+    }
+
+    pub async fn run_with_query_and_out_tensor(
+        &self,
+        device: &Device,
+        a: &Tensor<2, f32>,
+        b: &Tensor<2, f32>,
+        query: Option<&PerformanceQueries>,
+        output_tensor: &Tensor<2, f32>,
+    ) {
+        assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
+        let module = self.compile(device);
+
+        let a_shape = a.layout().shape();
+        let b_shape = b.layout().shape();
+        assert_eq!(*output_tensor.layout().shape(), [a_shape[0], b_shape[1]]);
 
         let bind_group_layout =
             device
@@ -150,7 +167,7 @@ impl MatMul {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: output_buf.as_entire_binding(),
+                        resource: output_tensor.buffer().as_entire_binding(),
                     },
                 ],
             });
@@ -175,8 +192,6 @@ impl MatMul {
             query.resolve(&mut encoder);
         }
         device.wgpu_queue().submit(Some(encoder.finish()));
-
-        Tensor::new_from_buffer(device, output_buf, [a_shape[0], b_shape[1]])
     }
 }
 

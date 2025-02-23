@@ -212,6 +212,43 @@ impl ReduceOperation {
         dim: usize,
         query: Option<&PerformanceQueries>,
     ) -> Tensor<1, f32> {
+        let shape = tensor.layout().shape();
+        let new_tensor_shape =
+            std::array::from_fn(|i| if i < dim { shape[i] } else { shape[i + 1] });
+        let output_buf = tensor
+            .device()
+            .wgpu_device()
+            .create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: (new_tensor_shape.iter().product::<usize>() * size_of::<f32>()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+        let output_tensor = Tensor::new_from_buffer(tensor.device(), output_buf, new_tensor_shape);
+
+        self.run_with_query_and_out_tensor(tensor, dim, query, &output_tensor);
+
+        output_tensor
+    }
+
+    pub fn run_with_query_and_out_tensor(
+        &self,
+        tensor: &Tensor<2, f32>,
+        dim: usize,
+        query: Option<&PerformanceQueries>,
+        output_tensor: &Tensor<1, f32>,
+    ) {
+        assert_eq!(
+            *output_tensor.layout().shape(),
+            [tensor
+                .layout()
+                .shape()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, x)| { (i != dim).then_some(*x as u32) })
+                .product::<u32>() as usize]
+        );
+
         let limits = tensor.device().wgpu_device().limits();
         let max_blocksize = (tensor.layout().shape()[dim] as u32)
             .min(limits.max_compute_workgroup_size_x)
@@ -281,18 +318,6 @@ impl ReduceOperation {
         );
         let shape = tensor.layout().shape();
         let strides = tensor.layout().strides();
-        let new_tensor_shape =
-            std::array::from_fn(|i| if i < dim { shape[i] } else { shape[i + 1] });
-        let output_buf = tensor
-            .device()
-            .wgpu_device()
-            .create_buffer(&wgpu::BufferDescriptor {
-                label: None,
-                size: (new_tensor_shape.iter().product::<usize>() * size_of::<f32>()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
-        let output_tensor = Tensor::new_from_buffer(tensor.device(), output_buf, new_tensor_shape);
 
         let compute_pipeline_layout =
             tensor
@@ -395,8 +420,6 @@ impl ReduceOperation {
             query.resolve(&mut encoder);
         }
         tensor.device().wgpu_queue().submit(Some(encoder.finish()));
-
-        output_tensor
     }
 }
 
