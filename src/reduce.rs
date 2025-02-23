@@ -459,6 +459,39 @@ async fn test_reduce_sum() {
 
 #[cfg(test)]
 #[tokio::test]
+async fn test_reduce_sliced_sum() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::Maintain::Wait);
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+    let tensor = tensor.slice([0..3, 0..1]);
+
+    let add = sum();
+    let reduction = ReduceOperation::new(add);
+    let output = reduction.run(&tensor, 0);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 9.);
+
+    let output = reduction.run(&tensor, 1);
+
+    let output = output.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0]], 1.);
+    assert_eq!(output[[1]], 3.);
+    assert_eq!(output[[2]], 5.);
+}
+
+#[cfg(test)]
+#[tokio::test]
 async fn test_reduce_const_add_then_sum_fused() {
     use crate::{add_const, Device};
 

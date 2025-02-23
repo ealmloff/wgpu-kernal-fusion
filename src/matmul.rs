@@ -28,6 +28,7 @@ impl MatMul {
         a: &Tensor<2, f32>,
         b: &Tensor<2, f32>,
     ) -> Tensor<2, f32> {
+        assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
         let module = self.compile(device);
 
         let a_shape = a.layout().shape();

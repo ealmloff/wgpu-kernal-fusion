@@ -45,6 +45,10 @@ impl ElementWiseOperation {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.functions.is_empty()
+    }
+
     pub(crate) fn modify_data(&self, inline: bool, kernel: &mut String) {
         if !inline {
             let call = self
@@ -101,9 +105,9 @@ impl ElementWiseOperation {
         if contiguous {
             for local_index in 0..TILE_SIZE {
                 let index = format!("index_{local_index}");
-                kernel.push_str(
-                    &format!("\t\tlet {index} = global_id.x * TILE_SIZE + {local_index} + tensor_layout.offset;\n"),
-                );
+                kernel.push_str(&format!(
+                    "\t\tlet {index} = global_id.x * TILE_SIZE + {local_index};\n"
+                ));
                 kernel.push_str(&format!("\t\tif {index} < \n"));
                 for i in 0..R {
                     kernel.push_str(&format!("tensor_layout.shape_{i}"));
@@ -122,7 +126,7 @@ impl ElementWiseOperation {
             for i in 0..R {
                 let index = ["x", "y", "z"][i];
                 kernel.push_str(&format!(
-                    "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE + tensor_layout.offset;\n"
+                    "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE;\n"
                 ));
             }
             kernel.push('\n');
@@ -155,15 +159,11 @@ impl ElementWiseOperation {
             for _ in 0..(R + 2) {
                 kernel.push('\t');
             }
-            kernel.push_str("let index = ");
-            if contiguous {
-                kernel.push_str("global_id.x * TILE_SIZE;\n");
-            } else {
-                for i in 0..R {
-                    kernel.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
-                }
-                kernel.push_str("0;\n");
+            kernel.push_str("let index = tensor_layout.offset + ");
+            for i in 0..R {
+                kernel.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
             }
+            kernel.push_str("0;\n");
             for _ in 0..(R + 2) {
                 kernel.push('\t');
             }
