@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use criterion::BatchSize;
 use futures::executor::block_on;
-use wgpu_compute::{
-    add, ElementWiseFunction, ElementWiseOperation, PairWiseOperation, PerformanceQueries,
-};
 use wgpu_compute::{Device, MatMul, Tensor};
+use wgpu_compute::{
+    ElementWiseFunction, ElementWiseOperation, PairWiseOperation, PerformanceQueries, add,
+};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -15,7 +15,7 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
+const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn bench_add(c: &mut Criterion) {
     async fn run_op(
@@ -47,9 +47,12 @@ fn bench_add(c: &mut Criterion) {
                 let device = device.clone();
                 b.to_async(FuturesExecutor).iter_custom(async |iters| {
                     let mut sum = Duration::ZERO;
-                    for _ in 0..iters {
-                        sum += run_op(device.clone(), tensor.clone(), tensor.clone(), op.clone())
-                            .await;
+                    while sum.is_zero() {
+                        for _ in 0..iters {
+                            sum +=
+                                run_op(device.clone(), tensor.clone(), tensor.clone(), op.clone())
+                                    .await;
+                        }
                     }
                     sum
                 })

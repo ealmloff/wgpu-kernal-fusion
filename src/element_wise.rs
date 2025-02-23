@@ -1,11 +1,11 @@
 use std::{fmt::Display, sync::OnceLock};
 
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    layout::{TensorLayout, TILE_SIZE},
-    query::PerformanceQueries,
     Tensor,
+    layout::{TILE_SIZE, TensorLayout},
+    query::PerformanceQueries,
 };
 
 #[cfg(test)]

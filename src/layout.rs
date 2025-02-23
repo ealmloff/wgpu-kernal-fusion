@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops::Range};
 
-use crate::{tensor::DataType, Tensor};
+use crate::{Tensor, tensor::DataType};
 
 pub(crate) const TILE_SIZE: u32 = 8;
 

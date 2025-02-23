@@ -5,9 +5,9 @@ use std::{
 };
 
 use bytemuck::{AnyBitPattern, NoUninit};
-use wgpu::{util::DownloadBuffer, BufferDescriptor, COPY_BUFFER_ALIGNMENT};
+use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
-use crate::{layout::Layout, Device};
+use crate::{Device, layout::Layout};
 
 pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {}
 

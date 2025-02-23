@@ -13,17 +13,17 @@ pub struct PerformanceQueries {
     destination_buffer: wgpu::Buffer,
     query_count: u64,
     next_unused_query: AtomicU32,
-    get_timestamp_period: f32,
+    get_timestamp_period: f64,
 }
 
 #[derive(Debug)]
 pub struct QueryResults {
     compute_start_end_timestamps: [u64; 2],
-    timestamp_period: f32,
+    timestamp_period: f64,
 }
 
 impl QueryResults {
-    fn new(timestamps: Vec<u64>, timestamp_period: f32) -> Self {
+    fn new(timestamps: Vec<u64>, timestamp_period: f64) -> Self {
         let compute_start_end_timestamps = timestamps.try_into().unwrap();
 
         QueryResults {
@@ -33,32 +33,23 @@ impl QueryResults {
     }
 
     pub fn elapsed(&self) -> Duration {
-        let elapsed_us = |start, end: u64| {
-            end.wrapping_sub(start) as f64 * self.timestamp_period as f64 / 1000.0
-        };
-
-        let us = elapsed_us(
-            self.compute_start_end_timestamps[0],
-            self.compute_start_end_timestamps[1],
-        );
-
-        Duration::from_micros(us as u64)
+        Duration::from_nanos(
+            (self.compute_start_end_timestamps[1]
+                .saturating_sub(self.compute_start_end_timestamps[0]) as f64
+                * self.timestamp_period) as _,
+        )
     }
 }
 
 impl Display for QueryResults {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
-            f,
-            "Elapsed time compute pass: {:?}",
-            self.elapsed()
-        )
+        writeln!(f, "Elapsed time compute pass: {:?}", self.elapsed())
     }
 }
 
 impl PerformanceQueries {
     pub fn new(device: &crate::Device) -> Self {
-        let get_timestamp_period = device.wgpu_queue().get_timestamp_period();
+        let get_timestamp_period = device.wgpu_queue().get_timestamp_period() as f64;
         let device = device.wgpu_device();
         PerformanceQueries {
             set: device.create_query_set(&wgpu::QuerySetDescriptor {

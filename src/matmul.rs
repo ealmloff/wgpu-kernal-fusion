@@ -1,6 +1,6 @@
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
-use crate::{query::PerformanceQueries, Device, Tensor};
+use crate::{Device, Tensor, query::PerformanceQueries};
 
 pub struct MatMul;
 
@@ -196,7 +196,9 @@ async fn test_matmul() {
     let tensor_b = Tensor::new(&device, &data_b);
 
     let query = PerformanceQueries::new(&device);
-    let tensor = MatMul.run_with_query(&device, &tensor_a, &tensor_b, Some(&query)).await;
+    let tensor = MatMul
+        .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
+        .await;
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
     println!("{}", query.wait_for_results().await);

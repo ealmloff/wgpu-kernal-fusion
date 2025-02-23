@@ -1,9 +1,9 @@
 use std::{fmt::Display, sync::OnceLock};
 
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    layout::Layout, query::PerformanceQueries, tensor::DataType, ElementWiseOperation, Tensor,
+    ElementWiseOperation, Tensor, layout::Layout, query::PerformanceQueries, tensor::DataType,
 };
 
 #[derive(Clone)]
@@ -512,7 +512,7 @@ async fn test_reduce_sliced_sum() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_add_then_sum_fused() {
-    use crate::{add_const, Device};
+    use crate::{Device, add_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -546,7 +546,7 @@ async fn test_reduce_const_add_then_sum_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_sum_then_add_fused() {
-    use crate::{add_const, Device};
+    use crate::{Device, add_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({

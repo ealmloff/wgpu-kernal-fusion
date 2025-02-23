@@ -2,10 +2,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use criterion::{black_box, BatchSize};
+use criterion::{BatchSize, black_box};
 use futures::executor::block_on;
-use wgpu_compute::{add_const, mul_const, ElementWiseFunction, ElementWiseOperation, PerformanceQueries};
 use wgpu_compute::{Device, MatMul, Tensor};
+use wgpu_compute::{
+    ElementWiseFunction, ElementWiseOperation, PerformanceQueries, add_const, mul_const,
+};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -13,10 +15,14 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
+const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn fused(c: &mut Criterion) {
-    async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ElementWiseOperation>) -> Duration {
+    async fn run_op(
+        device: Device,
+        tensor: Tensor<2, f32>,
+        op: Arc<ElementWiseOperation>,
+    ) -> Duration {
         let query = PerformanceQueries::new(&device);
         op.run_with_query(&tensor, Some(&query));
         query.wait_for_results().await.elapsed()
@@ -30,8 +36,11 @@ fn fused(c: &mut Criterion) {
     ) -> Duration {
         let query = PerformanceQueries::new(&device);
         op1.run_with_query(&tensor, Some(&query));
+        let first = query.wait_for_results().await.elapsed();
+        let query = PerformanceQueries::new(&device);
         op2.run_with_query(&tensor, Some(&query));
-        query.wait_for_results().await.elapsed()
+        let second = query.wait_for_results().await.elapsed();
+        first + second
     }
 
     {
@@ -59,10 +68,12 @@ fn fused(c: &mut Criterion) {
                     let device = device.clone();
                     b.to_async(FuturesExecutor).iter_custom(async |iters| {
                         let mut sum = Duration::ZERO;
-                        for _ in 0..iters {
-                            let tensor = tensor.clone();
-                            let op = op.clone();
-                            sum += run_op(device.clone(), tensor, op).await; 
+                        while sum.is_zero() {
+                            for _ in 0..iters {
+                                let tensor = tensor.clone();
+                                let op = op.clone();
+                                sum += run_op(device.clone(), tensor, op).await;
+                            }
                         }
                         sum
                     })
@@ -94,8 +105,16 @@ fn fused(c: &mut Criterion) {
                     let device = device.clone();
                     b.to_async(FuturesExecutor).iter_custom(async |iters| {
                         let mut sum = Duration::ZERO;
-                        for _ in 0..iters {
-                            sum += add_const_separate(device.clone(), tensor.clone(), op1.clone(), op2.clone()).await;
+                        while sum.is_zero() {
+                            for _ in 0..iters {
+                                sum += add_const_separate(
+                                    device.clone(),
+                                    tensor.clone(),
+                                    op1.clone(),
+                                    op2.clone(),
+                                )
+                                .await;
+                            }
                         }
                         sum
                     })

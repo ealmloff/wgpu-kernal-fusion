@@ -12,13 +12,17 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
+const SIZES: [usize; 5] = [100, 200, 500, 1000, 5000];
 
 fn matmul(c: &mut Criterion) {
     // Here we have an async function to benchmark
-    async fn matmul(device: Device, tensor_a: Tensor<2, f32>, tensor_b: Tensor<2, f32>) -> Duration {
+    async fn matmul(
+        device: Device,
+        tensor_a: Tensor<2, f32>,
+        tensor_b: Tensor<2, f32>,
+    ) -> Duration {
         let query = PerformanceQueries::new(&device);
-        let tensor = MatMul.run(&device, &tensor_a, &tensor_b).await;
+        let tensor = MatMul.run_with_query(&device, &tensor_a, &tensor_b, Some(&query)).await;
         query.wait_for_results().await.elapsed()
     }
 
@@ -41,15 +45,15 @@ fn matmul(c: &mut Criterion) {
                 &size,
                 move |b, &s| {
                     let device = device.clone();
-                    b.to_async(FuturesExecutor).iter_custom(
-                        async |iters| {
-                            let mut sum = Duration::ZERO;
+                    b.to_async(FuturesExecutor).iter_custom(async |iters| {
+                        let mut sum = Duration::ZERO;
+                        while sum.is_zero() {
                             for _ in 0..iters {
                                 sum += matmul(device.clone(), tensor.clone(), tensor.clone()).await;
                             }
-                            sum
                         }
-                    );
+                        sum
+                    });
                 },
             );
         }

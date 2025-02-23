@@ -5,8 +5,10 @@ use std::time::Duration;
 use criterion::BatchSize;
 use futures::executor::block_on;
 use ndarray::Axis;
-use wgpu_compute::{sum, ElementWiseFunction, ElementWiseOperation, PerformanceQueries, ReduceOperation};
 use wgpu_compute::{Device, MatMul, Tensor};
+use wgpu_compute::{
+    ElementWiseFunction, ElementWiseOperation, PerformanceQueries, ReduceOperation, sum,
+};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -14,7 +16,7 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 5] = [10, 100, 200, 500, 1000];
+const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn bench_sum_reduce(c: &mut Criterion) {
     async fn run_op(device: Device, tensor: Tensor<2, f32>, op: Arc<ReduceOperation>) -> Duration {
@@ -41,10 +43,12 @@ fn bench_sum_reduce(c: &mut Criterion) {
                 let device = device.clone();
                 b.to_async(FuturesExecutor).iter_custom(async |iters| {
                     let mut sum = Duration::ZERO;
-                    for _ in 0..iters {
-                        let tensor = tensor.clone();
-                        let op = op.clone();
-                        sum += run_op(device.clone(), tensor, op).await;
+                    while sum.is_zero() {
+                        for _ in 0..iters {
+                            let tensor = tensor.clone();
+                            let op = op.clone();
+                            sum += run_op(device.clone(), tensor, op).await;
+                        }
                     }
                     sum
                 })

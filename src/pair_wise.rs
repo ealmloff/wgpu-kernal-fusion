@@ -1,11 +1,11 @@
 use std::{fmt::Display, sync::OnceLock};
 
-use wgpu::{util::DeviceExt, PipelineCompilationOptions};
+use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    layout::{TensorLayout, TILE_SIZE},
-    query::PerformanceQueries,
     ElementWiseOperation, Tensor,
+    layout::{TILE_SIZE, TensorLayout},
+    query::PerformanceQueries,
 };
 
 pub struct PairWiseOperation {
@@ -474,7 +474,7 @@ async fn test_pair_wise_add() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_const_mul_const_add_fused() {
-    use crate::{add_const, mul_const, Device};
+    use crate::{Device, add_const, mul_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -506,7 +506,7 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_sub_const_fused() {
-    use crate::{sub_const, Device};
+    use crate::{Device, sub_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
