@@ -118,3 +118,11 @@ impl<const R: usize, D> Layout<R, D> {
         self.offset
     }
 }
+
+#[test]
+fn test_contiguous() {
+    let layout = Layout::<2, f32>::contiguous([2, 3]);
+    assert!(layout.is_contiguous());
+    assert!(!layout.slice([0..1, 0..1]).is_contiguous());
+    assert!(!layout.slice([1..2, 0..3]).is_contiguous());
+}
