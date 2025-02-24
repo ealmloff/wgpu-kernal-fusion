@@ -7,6 +7,7 @@ pub use query::*;
 pub use reduce::*;
 pub use tensor::Tensor;
 
+mod compute_graph;
 mod device;
 mod element_wise;
 mod layout;

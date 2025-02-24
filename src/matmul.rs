@@ -5,57 +5,52 @@ use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 use crate::{
     Device, Tensor,
     query::PerformanceQueries,
-    tensor::{DataType, padded_tensor_size},
+    tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
 };
 
-pub struct MatMul<T> {
+struct UntypedMatMul {
     kernel: OnceLock<wgpu::ShaderModule>,
-    datatype: PhantomData<T>,
+    datatype: DataTypeEnum,
 }
 
-impl<T> Default for MatMul<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T> MatMul<T> {
-    pub const fn new() -> Self {
+impl UntypedMatMul {
+    const fn new(datatype: DataTypeEnum) -> Self {
         Self {
             kernel: OnceLock::new(),
-            datatype: PhantomData,
+            datatype,
         }
     }
-}
 
-impl<T: DataType> MatMul<T> {
     fn compile(&self, device: &Device) -> &wgpu::ShaderModule {
         self.kernel.get_or_init(|| {
-            let source = template(T::WGSL_TYPE);
+            let source = template(self.datatype);
             device.create_shader_module(source)
         })
-    }
-
-    pub async fn run(&self, device: &Device, a: &Tensor<2, T>, b: &Tensor<2, T>) -> Tensor<2, T> {
-        self.run_with_query(device, a, b, None).await
     }
 
     pub async fn run_with_query(
         &self,
         device: &Device,
-        a: &Tensor<2, T>,
-        b: &Tensor<2, T>,
+        a: &TensorData,
+        b: &TensorData,
         query: Option<&PerformanceQueries>,
-    ) -> Tensor<2, T> {
+    ) -> TensorData {
         let a_shape = a.layout().shape();
         let b_shape = b.layout().shape();
         let output_buf = device.wgpu_device().create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: padded_tensor_size((a_shape[0] * b_shape[1] * size_of::<T>()) as u64),
+            size: padded_tensor_size(
+                (a_shape[0] * b_shape[1] * a.datatype().element_size()) as u64,
+            ),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let output_tensor = Tensor::new_from_buffer(device, output_buf, [a_shape[0], b_shape[1]]);
+        let output_tensor = TensorData::new_from_buffer(
+            device,
+            output_buf,
+            &[a_shape[0], b_shape[1]],
+            a.datatype(),
+        );
         self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor)
             .await;
         output_tensor
@@ -64,10 +59,10 @@ impl<T: DataType> MatMul<T> {
     pub async fn run_with_query_and_out_tensor(
         &self,
         device: &Device,
-        a: &Tensor<2, T>,
-        b: &Tensor<2, T>,
+        a: &TensorData,
+        b: &TensorData,
         query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<2, T>,
+        output_tensor: &TensorData,
     ) {
         assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
         let module = self.compile(device);
@@ -204,6 +199,59 @@ impl<T: DataType> MatMul<T> {
     }
 }
 
+pub struct MatMul<T> {
+    untyped: UntypedMatMul,
+    datatype: PhantomData<T>,
+}
+
+impl<T: DataType> Default for MatMul<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: DataType> MatMul<T> {
+    pub const fn new() -> Self {
+        Self {
+            untyped: UntypedMatMul::new(T::WGSL_TYPE),
+            datatype: PhantomData,
+        }
+    }
+
+    pub async fn run(&self, device: &Device, a: &Tensor<2, T>, b: &Tensor<2, T>) -> Tensor<2, T> {
+        self.untyped
+            .run_with_query(device, a.data(), b.data(), None)
+            .await
+            .into()
+    }
+
+    pub async fn run_with_query(
+        &self,
+        device: &Device,
+        a: &Tensor<2, T>,
+        b: &Tensor<2, T>,
+        query: Option<&PerformanceQueries>,
+    ) -> Tensor<2, T> {
+        self.untyped
+            .run_with_query(device, a.data(), b.data(), query)
+            .await
+            .into()
+    }
+
+    pub async fn run_with_query_and_out_tensor(
+        &self,
+        device: &Device,
+        a: &Tensor<2, T>,
+        b: &Tensor<2, T>,
+        query: Option<&PerformanceQueries>,
+        output_tensor: &Tensor<2, T>,
+    ) {
+        self.untyped
+            .run_with_query_and_out_tensor(device, a.data(), b.data(), query, output_tensor.data())
+            .await
+    }
+}
+
 #[cfg(test)]
 #[tokio::test]
 async fn test_matmul() {
@@ -330,8 +378,12 @@ async fn fuzz_matmul() {
     assert_eq!(as_slice[[1, 1]], 6.);
 }
 
-fn template(dtype: &str) -> String {
-    let enable_fp16 = if dtype == "f16" { "enable f16;\n" } else { "" };
+fn template(dtype: DataTypeEnum) -> String {
+    let enable_fp16 = if dtype == DataTypeEnum::F16 {
+        "enable f16;\n"
+    } else {
+        ""
+    };
 
     // From https://github.com/zanussbaum/surfgrad/blob/4f696e3ddcbeb2c7686bc7dbb83c3dbb89595591/src/shaders/matmul.ts
     // Article https://www.nuss-and-bolts.com/p/optimizing-a-webgpu-matmul-kernel

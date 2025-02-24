@@ -3,23 +3,19 @@ use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    ElementWiseOperation, Tensor,
+    Tensor, UntypedElementWiseOperation,
     layout::Layout,
     query::PerformanceQueries,
-    tensor::{DataType, padded_tensor_size},
+    tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
 };
 
 #[derive(Clone)]
-pub(crate) struct ReduceTensorLayout<const R: usize> {
+pub(crate) struct ReduceTensorLayout {
     pub(crate) data: Box<[u32]>,
 }
 
-impl<const R: usize> ReduceTensorLayout<R> {
-    pub(crate) fn new<const R2: usize, D: DataType>(
-        dim: usize,
-        input_layout: &Layout<R2, D>,
-        output_layout: &Layout<R, D>,
-    ) -> Self {
+impl ReduceTensorLayout {
+    pub(crate) fn new(dim: usize, input_layout: &Layout, output_layout: &Layout) -> Self {
         let data = input_layout
             .strides()
             .iter()
@@ -34,17 +30,22 @@ impl<const R: usize> ReduceTensorLayout<R> {
         Self { data }
     }
 
-    pub(crate) fn wgsl_type_definition(kernel: &mut String) {
+    pub(crate) fn output_rank(&self) -> usize {
+        (self.data.len() - 1) / 3
+    }
+
+    pub(crate) fn wgsl_type_definition(&self, kernel: &mut String) {
+        let rank = self.output_rank();
         kernel.push_str("struct ReduceTensorLayout {\n");
-        for i in 0..R {
+        for i in 0..rank {
             kernel.push_str(&format!("\tin_stride_{}: u32,\n", i));
         }
         kernel.push_str("\tin_offset: u32,\n");
-        for i in 0..R {
+        for i in 0..rank {
             kernel.push_str(&format!("\tout_stride_{}: u32,\n", i));
         }
         kernel.push_str("\tout_offset: u32,\n");
-        for i in 0..R {
+        for i in 0..rank {
             kernel.push_str(&format!("\tout_shape_{}: u32,\n", i));
         }
         kernel.push_str("}\n");
@@ -52,21 +53,61 @@ impl<const R: usize> ReduceTensorLayout<R> {
 }
 
 pub struct ReduceOperation<T> {
-    pre_element_wise: ElementWiseOperation<T>,
-    reduce: ReduceFunction,
-    post_element_wise: ElementWiseOperation<T>,
-    kernel: OnceLock<wgpu::ShaderModule>,
+    untyped: UntypedReduceOperation,
     datatype: PhantomData<T>,
 }
 
 impl<T: DataType> ReduceOperation<T> {
     pub fn new(reduce: ReduceFunction) -> Self {
         Self {
-            pre_element_wise: ElementWiseOperation::default(),
-            reduce,
-            post_element_wise: ElementWiseOperation::default(),
-            kernel: OnceLock::new(),
+            untyped: UntypedReduceOperation::new(reduce, T::WGSL_TYPE),
             datatype: PhantomData,
+        }
+    }
+
+    pub fn run(&self, tensor: &Tensor<2, T>, dim: usize) -> Tensor<1, T> {
+        self.run_with_query(tensor, dim, None)
+    }
+
+    pub fn run_with_query(
+        &self,
+        tensor: &Tensor<2, T>,
+        dim: usize,
+        query: Option<&PerformanceQueries>,
+    ) -> Tensor<1, T> {
+        self.untyped
+            .run_with_query(tensor.data(), dim, query)
+            .into()
+    }
+
+    pub fn run_with_query_and_out_tensor(
+        &self,
+        tensor: &Tensor<2, T>,
+        dim: usize,
+        query: Option<&PerformanceQueries>,
+        output_tensor: &Tensor<1, T>,
+    ) {
+        self.untyped
+            .run_with_query_and_out_tensor(tensor.data(), dim, query, output_tensor.data())
+    }
+}
+
+pub(crate) struct UntypedReduceOperation {
+    pre_element_wise: UntypedElementWiseOperation,
+    reduce: ReduceFunction,
+    post_element_wise: UntypedElementWiseOperation,
+    kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: DataTypeEnum,
+}
+
+impl UntypedReduceOperation {
+    pub fn new(reduce: ReduceFunction, datatype: DataTypeEnum) -> Self {
+        Self {
+            pre_element_wise: UntypedElementWiseOperation::empty(datatype),
+            reduce,
+            post_element_wise: UntypedElementWiseOperation::empty(datatype),
+            kernel: OnceLock::new(),
+            datatype,
         }
     }
 
@@ -81,13 +122,13 @@ impl<T: DataType> ReduceOperation<T> {
         }
     }
 
-    fn tiled_map<const R1: usize, const R2: usize>(&self, blocksize: u32, inline: bool) -> String {
-        let dtype = T::WGSL_TYPE;
+    fn tiled_map(&self, blocksize: u32, inline: bool, layout: &ReduceTensorLayout) -> String {
+        let dtype = self.datatype;
         let mut kernel = String::new();
-        if dtype == "f16" {
+        if dtype == DataTypeEnum::F16 {
             kernel.push_str("enable f16;\n");
         }
-        ReduceTensorLayout::<R2>::wgsl_type_definition(&mut kernel);
+        layout.wgsl_type_definition(&mut kernel);
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
         // And the mlx implementation https://github.com/ml-explore/mlx/blob/b05bcfd27f5f1293401b74dce02e38c8fd7ef66a/mlx/backend/metal/kernels/arg_reduce.metal
         // We can't query the warp size in WGSL, but we can use subgroup operations
@@ -127,7 +168,7 @@ impl<T: DataType> ReduceOperation<T> {
         kernel.push_str("\tvar workgroup_index_remainder = workgroup_index;\n");
         kernel.push_str("\tvar in_start_offset = tensor_layout.in_offset;\n");
         kernel.push_str("\tvar out_start_offset = tensor_layout.out_offset;\n");
-        for i in 0..R2 {
+        for i in 0..layout.output_rank() {
             kernel.push_str(&format!(
                 "\tlet index_{i} = workgroup_index_remainder % tensor_layout.out_shape_{i};\n"
             ));
@@ -214,31 +255,36 @@ impl<T: DataType> ReduceOperation<T> {
         kernel
     }
 
-    pub fn run(&self, tensor: &Tensor<2, T>, dim: usize) -> Tensor<1, T> {
-        self.run_with_query(tensor, dim, None)
-    }
-
     pub fn run_with_query(
         &self,
-        tensor: &Tensor<2, T>,
+        tensor: &TensorData,
         dim: usize,
         query: Option<&PerformanceQueries>,
-    ) -> Tensor<1, T> {
+    ) -> TensorData {
         let shape = tensor.layout().shape();
-        let new_tensor_shape =
-            std::array::from_fn(|i| if i < dim { shape[i] } else { shape[i + 1] });
+        let new_tensor_shape = shape
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| (i != dim).then_some(*x))
+            .collect::<Vec<_>>();
         let output_buf = tensor
             .device()
             .wgpu_device()
             .create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: padded_tensor_size(
-                    (new_tensor_shape.iter().product::<usize>() * size_of::<T>()) as u64,
+                    (new_tensor_shape.iter().product::<usize>() * self.datatype.element_size())
+                        as u64,
                 ),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
-        let output_tensor = Tensor::new_from_buffer(tensor.device(), output_buf, new_tensor_shape);
+        let output_tensor = TensorData::new_from_buffer(
+            tensor.device(),
+            output_buf,
+            &new_tensor_shape,
+            self.datatype,
+        );
 
         self.run_with_query_and_out_tensor(tensor, dim, query, &output_tensor);
 
@@ -247,10 +293,10 @@ impl<T: DataType> ReduceOperation<T> {
 
     pub fn run_with_query_and_out_tensor(
         &self,
-        tensor: &Tensor<2, T>,
+        tensor: &TensorData,
         dim: usize,
         query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<1, T>,
+        output_tensor: &TensorData,
     ) {
         assert_eq!(
             *output_tensor.layout().shape(),
@@ -268,8 +314,9 @@ impl<T: DataType> ReduceOperation<T> {
             .min(limits.max_compute_workgroup_size_x)
             .max(limits.min_subgroup_size)
             .max(32);
+        let layout = ReduceTensorLayout::new(dim, tensor.layout(), output_tensor.layout());
         let module = self.kernel.get_or_init(|| {
-            let source = self.tiled_map::<2, 1>(max_blocksize, true);
+            let source = self.tiled_map(max_blocksize, true, &layout);
             tensor.device().create_shader_module(source)
         });
 
@@ -352,8 +399,6 @@ impl<T: DataType> ReduceOperation<T> {
                 compilation_options: PipelineCompilationOptions::default(),
             },
         );
-
-        let layout = ReduceTensorLayout::new(dim, tensor.layout(), output_tensor.layout());
 
         let layout =
             tensor
@@ -460,7 +505,7 @@ impl ReduceFunction {
         format!("reduce_{name_id}({a}, {b})")
     }
 
-    fn function(&self, dtype: &str) -> String {
+    fn function(&self, dtype: DataTypeEnum) -> String {
         let Self {
             name_id, operation, ..
         } = self;
@@ -588,7 +633,7 @@ async fn test_reduce_sliced_sum() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_add_then_sum_fused() {
-    use crate::{Device, add_const};
+    use crate::{Device, ElementWiseOperation, add_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -602,7 +647,7 @@ async fn test_reduce_const_add_then_sum_fused() {
 
     let add = sum();
     let mut reduction = ReduceOperation::new(add);
-    reduction.pre_element_wise = ElementWiseOperation::new([add_const(1.0)]);
+    reduction.untyped.pre_element_wise = ElementWiseOperation::<f32>::new([add_const(1.0)]).untyped;
     let output = reduction.run(&tensor, 0);
 
     let output = output.as_slice().await.unwrap();
@@ -622,7 +667,7 @@ async fn test_reduce_const_add_then_sum_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_sum_then_add_fused() {
-    use crate::{Device, add_const};
+    use crate::{Device, ElementWiseOperation, add_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -636,7 +681,8 @@ async fn test_reduce_const_sum_then_add_fused() {
 
     let add = sum();
     let mut reduction = ReduceOperation::new(add);
-    reduction.post_element_wise = ElementWiseOperation::new([add_const(1.0)]);
+    reduction.untyped.post_element_wise =
+        ElementWiseOperation::<f32>::new([add_const(1.0)]).untyped;
     let output = reduction.run(&tensor, 0);
 
     let output = output.as_slice().await.unwrap();

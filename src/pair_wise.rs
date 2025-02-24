@@ -3,33 +3,60 @@ use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    ElementWiseOperation, Tensor,
+    Tensor, UntypedElementWiseOperation,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
-    tensor::DataType,
+    tensor::{DataType, DataTypeEnum, TensorData},
 };
 
 pub struct PairWiseOperation<T> {
-    pre_element_wise: [ElementWiseOperation<T>; 2],
-    function: PairWiseFunction,
-    post_element_wise: ElementWiseOperation<T>,
-    dense_kernel: OnceLock<wgpu::ShaderModule>,
-    sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    untyped: UntypedPairWiseOperation,
     datatype: PhantomData<T>,
 }
 
 impl<T: DataType> PairWiseOperation<T> {
     pub fn new(function: PairWiseFunction) -> Self {
         Self {
+            untyped: UntypedPairWiseOperation::new(function, T::WGSL_TYPE),
+            datatype: PhantomData,
+        }
+    }
+
+    pub fn run<const R: usize>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
+        self.run_with_query(first, out, None);
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        first: &Tensor<R, T>,
+        out: &Tensor<R, T>,
+        query: Option<&PerformanceQueries>,
+    ) {
+        self.untyped.run_with_query(first.data(), out.data(), query);
+    }
+}
+
+pub(crate) struct UntypedPairWiseOperation {
+    pre_element_wise: [UntypedElementWiseOperation; 2],
+    function: PairWiseFunction,
+    post_element_wise: UntypedElementWiseOperation,
+    dense_kernel: OnceLock<wgpu::ShaderModule>,
+    sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: DataTypeEnum,
+}
+
+impl UntypedPairWiseOperation {
+    pub fn new(function: PairWiseFunction, datatype: DataTypeEnum) -> Self {
+        Self {
             pre_element_wise: [
-                ElementWiseOperation::default(),
-                ElementWiseOperation::default(),
+                UntypedElementWiseOperation::empty(datatype),
+                UntypedElementWiseOperation::empty(datatype),
             ],
             function,
-            post_element_wise: ElementWiseOperation::default(),
+            post_element_wise: UntypedElementWiseOperation::empty(datatype),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
-            datatype: PhantomData,
+            datatype,
         }
     }
 
@@ -59,23 +86,30 @@ impl<T: DataType> PairWiseOperation<T> {
             operation.add_functions(inline, &mut *kernel);
         }
         if !inline {
-            kernel.push_str(&self.function.function(T::WGSL_TYPE));
+            kernel.push_str(&self.function.function(self.datatype));
         }
         self.post_element_wise.add_functions(inline, &mut *kernel);
     }
 
-    fn tiled_map<const R: usize>(&self, blocksize: u32, inline: bool, contiguous: bool) -> String {
-        const {
-            assert!(R <= 3, "TensorLayout only supports up to 3 rank tensors");
-        }
+    fn tiled_map(
+        &self,
+        blocksize: u32,
+        inline: bool,
+        contiguous: bool,
+        first_layout: &TensorLayout,
+        second_layout: &TensorLayout,
+    ) -> String {
+        let rank = first_layout.rank();
+        assert!(rank <= 3, "TensorLayout only supports up to 3 rank tensors");
+        assert_eq!(rank, second_layout.rank());
 
-        let dtype = T::WGSL_TYPE;
+        let dtype = self.datatype;
 
         let mut kernel = String::new();
-        if dtype == "f16" {
+        if dtype == DataTypeEnum::F16 {
             kernel.push_str("enable f16;\n");
         }
-        TensorLayout::<R>::wgsl_type_definition(&mut kernel);
+        first_layout.wgsl_type_definition(&mut kernel);
         kernel.push_str("@group(0) @binding(0) var<uniform> first_tensor_layout: TensorLayout;\n");
         kernel.push_str(&format!(
             "@group(0) @binding(1) var<storage, read_write> first_tensor: array<{dtype}>;\n"
@@ -91,9 +125,9 @@ impl<T: DataType> PairWiseOperation<T> {
         if contiguous {
             kernel.push_str("BLOCKSIZE");
         } else {
-            for i in 0..R {
+            for i in 0..rank {
                 kernel.push_str("BLOCKSIZE");
-                if i < R - 1 {
+                if i < rank - 1 {
                     kernel.push_str(", ");
                 }
             }
@@ -107,9 +141,9 @@ impl<T: DataType> PairWiseOperation<T> {
                     "\t\tlet {index} = global_id.x * TILE_SIZE + {local_index}u;\n"
                 ));
                 kernel.push_str(&format!("\t\tif {index} < \n"));
-                for i in 0..R {
+                for i in 0..rank {
                     kernel.push_str(&format!("first_tensor_layout.shape_{i}"));
-                    if i < R - 1 {
+                    if i < rank - 1 {
                         kernel.push_str(" * ");
                     }
                 }
@@ -123,7 +157,7 @@ impl<T: DataType> PairWiseOperation<T> {
                 kernel.push_str("\t\t}\n");
             }
         } else {
-            for i in 0..R {
+            for i in 0..rank {
                 let index = ["x", "y", "z"][i];
                 kernel.push_str(&format!(
                     "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE;\n"
@@ -131,15 +165,15 @@ impl<T: DataType> PairWiseOperation<T> {
             }
             kernel.push('\n');
 
-            for i in 0..R {
+            for i in 0..rank {
                 for _ in 0..(i + 1) {
                     kernel.push('\t');
                 }
                 kernel.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
             }
 
-            for i in 0..R {
-                for _ in 0..(R + 1) {
+            for i in 0..rank {
+                for _ in 0..(rank + 1) {
                     kernel.push('\t');
                 }
                 kernel.push_str(&format!(
@@ -147,31 +181,31 @@ impl<T: DataType> PairWiseOperation<T> {
                 ));
             }
 
-            for _ in 0..(R + 1) {
+            for _ in 0..(rank + 1) {
                 kernel.push('\t');
             }
 
             kernel.push_str("if ");
-            for i in 0..R {
+            for i in 0..rank {
                 kernel.push_str(&format!(
                     "merged_index_{i} < first_tensor_layout.shape_{i} && "
                 ));
             }
             kernel.push_str("true {\n");
-            for _ in 0..(R + 2) {
+            for _ in 0..(rank + 2) {
                 kernel.push('\t');
             }
             for tensor_prefix in ["first", "out"].iter() {
                 kernel.push_str(&format!(
                     "let {tensor_prefix}_index = {tensor_prefix}_tensor_layout.offset + "
                 ));
-                for i in 0..R {
+                for i in 0..rank {
                     kernel.push_str(&format!(
                         "{tensor_prefix}_tensor_layout.stride_{i} * merged_index_{i} + "
                     ));
                 }
                 kernel.push_str("0u;\n");
-                for _ in 0..(R + 2) {
+                for _ in 0..(rank + 2) {
                     kernel.push('\t');
                 }
             }
@@ -182,12 +216,12 @@ impl<T: DataType> PairWiseOperation<T> {
             self.modify_data(inline, &mut kernel);
             kernel.push_str("\t\t\tout_tensor[out_index] = data;\n");
 
-            for _ in 0..(R + 1) {
+            for _ in 0..(rank + 1) {
                 kernel.push('\t');
             }
             kernel.push_str("}\n");
 
-            for i in (0..R).rev() {
+            for i in (0..rank).rev() {
                 for _ in 0..(i + 1) {
                     kernel.push('\t');
                 }
@@ -200,33 +234,34 @@ impl<T: DataType> PairWiseOperation<T> {
         kernel
     }
 
-    pub fn run<const R: usize>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
-        self.run_with_query(first, out, None);
-    }
-
-    pub fn run_with_query<const R: usize>(
+    pub fn run_with_query(
         &self,
-        first: &Tensor<R, T>,
-        out: &Tensor<R, T>,
+        first: &TensorData,
+        out: &TensorData,
         query: Option<&PerformanceQueries>,
     ) {
         assert_eq!(first.layout().shape(), out.layout().shape());
         let contiguous = first.layout().is_contiguous() && out.layout().is_contiguous();
+        let rank = first.layout().rank();
+        let first_layout = TensorLayout::from(first.layout());
+        let out_layout = TensorLayout::from(out.layout());
         let max_blocksize = if contiguous {
             256
         } else {
             // max_blocksize^R = 256
-            (256f64.powf(1. / R as f64)).floor() as u32
+            (256f64.powf(1. / rank as f64)).floor() as u32
         };
         let device = first.device();
         let module = if contiguous {
             self.dense_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true, contiguous);
+                let source =
+                    self.tiled_map(max_blocksize, true, contiguous, &first_layout, &out_layout);
                 device.create_shader_module(source)
             })
         } else {
             self.sparse_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true, contiguous);
+                let source =
+                    self.tiled_map(max_blocksize, true, contiguous, &first_layout, &out_layout);
                 device.create_shader_module(source)
             })
         };
@@ -298,9 +333,6 @@ impl<T: DataType> PairWiseOperation<T> {
                     cache: None,
                     compilation_options: PipelineCompilationOptions::default(),
                 });
-
-        let first_layout = TensorLayout::for_tensor(first);
-        let out_layout = TensorLayout::for_tensor(out);
 
         let first_layout =
             device
@@ -413,7 +445,7 @@ impl PairWiseFunction {
         format!("binary_{name_id}({a}, {b})")
     }
 
-    fn function(&self, dtype: &str) -> String {
+    fn function(&self, dtype: DataTypeEnum) -> String {
         let Self { name_id, operation } = self;
         format!(
             r#"fn binary_{name_id}(a: {dtype}, b: {dtype}) -> {dtype} {{
@@ -515,7 +547,7 @@ async fn test_pair_wise_add_f16() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_const_mul_const_add_fused() {
-    use crate::{Device, add_const, mul_const};
+    use crate::{Device, ElementWiseOperation, add_const, mul_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -530,8 +562,8 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
     let tensor_b = Tensor::new(&device, &data_b);
 
     let mut op = PairWiseOperation::new(add());
-    op.pre_element_wise[0] = ElementWiseOperation::new([add_const(1.)]);
-    op.pre_element_wise[1] = ElementWiseOperation::new([mul_const(2.)]);
+    op.untyped.pre_element_wise[0] = ElementWiseOperation::<f32>::new([add_const(1.)]).untyped;
+    op.untyped.pre_element_wise[1] = ElementWiseOperation::<f32>::new([mul_const(2.)]).untyped;
     op.run(&tensor_a, &tensor_b);
     let as_slice = tensor_b.as_slice().await.unwrap();
     println!("{:?}", as_slice);
@@ -547,7 +579,7 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_sub_const_fused() {
-    use crate::{Device, sub_const};
+    use crate::{Device, ElementWiseOperation, sub_const};
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -562,7 +594,7 @@ async fn test_pair_wise_add_sub_const_fused() {
     let tensor_b = Tensor::new(&device, &data_b);
 
     let mut op = PairWiseOperation::new(add());
-    op.post_element_wise = ElementWiseOperation::new([sub_const(1.)]);
+    op.untyped.post_element_wise = ElementWiseOperation::<f32>::new([sub_const(1.)]).untyped;
     op.run(&tensor_a, &tensor_b);
     let as_slice = tensor_b.as_slice().await.unwrap();
     println!("{:?}", as_slice);

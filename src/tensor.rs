@@ -1,5 +1,6 @@
 use std::{
     fmt::{Debug, Display},
+    marker::PhantomData,
     ops::{Deref, Index, Range},
     sync::Arc,
 };
@@ -10,29 +11,153 @@ use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 use crate::{Device, layout::Layout};
 
 pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
-    const WGSL_TYPE: &'static str;
+    const WGSL_TYPE: DataTypeEnum;
 }
 
 impl DataType for f32 {
-    const WGSL_TYPE: &'static str = "f32";
+    const WGSL_TYPE: DataTypeEnum = DataTypeEnum::F32;
 }
 
 impl DataType for half::f16 {
-    const WGSL_TYPE: &'static str = "f16";
+    const WGSL_TYPE: DataTypeEnum = DataTypeEnum::F16;
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataTypeEnum {
+    F32,
+    F16,
+}
+
+impl DataTypeEnum {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DataTypeEnum::F32 => "f32",
+            DataTypeEnum::F16 => "f16",
+        }
+    }
+
+    pub fn element_size(&self) -> usize {
+        match self {
+            DataTypeEnum::F32 => size_of::<f32>(),
+            DataTypeEnum::F16 => size_of::<half::f16>(),
+        }
+    }
+}
+
+impl Display for DataTypeEnum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TensorData {
+    device: Device,
+    buffer: Arc<wgpu::Buffer>,
+    layout: Layout,
+    datatype: DataTypeEnum,
+}
+
+impl TensorData {
+    pub(crate) fn new_from_buffer(
+        device: &Device,
+        buffer: wgpu::Buffer,
+        size: &[usize],
+        datatype: DataTypeEnum,
+    ) -> Self {
+        Self {
+            device: device.clone(),
+            buffer: Arc::new(buffer),
+            layout: Layout::contiguous(size),
+            datatype,
+        }
+    }
+
+    fn new_inner<'a, D: DataType, I: Iterator<Item = &'a D>>(
+        device: &Device,
+        data: I,
+        shape: &[usize],
+    ) -> Self {
+        // MODIFIED from: https://github.com/gfx-rs/wgpu/blob/d8833d079833c62b4fd00325d0ba08ec0c8bc309/wgpu/src/util/device.rs#L38
+        fn create_aligned_buffer(
+            element_size: u64,
+            shape: &[usize],
+            device: &Device,
+        ) -> (wgpu::Buffer, u64) {
+            let size = element_size * shape.iter().copied().product::<usize>() as u64;
+
+            let padded_size = padded_tensor_size(size);
+
+            let wgt_descriptor = BufferDescriptor {
+                label: None,
+                size: padded_size,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: true,
+            };
+
+            let buffer = device.wgpu_device().create_buffer(&wgt_descriptor);
+            (buffer, size)
+        }
+        let (buffer, unpadded_size) = create_aligned_buffer(size_of::<D>() as u64, &shape, device);
+
+        buffer.slice(..).get_mapped_range_mut()[..unpadded_size as usize]
+            .iter_mut()
+            .zip(data.flat_map(bytemuck::bytes_of))
+            .for_each(|(dst, src)| *dst = *src);
+        buffer.unmap();
+
+        Self::new_from_buffer(device, buffer, &shape, D::WGSL_TYPE)
+    }
+
+    pub fn slice(&self, ranges: &[Range<usize>]) -> Self {
+        let layout = self.layout.slice(ranges);
+        Self {
+            device: self.device.clone(),
+            buffer: self.buffer.clone(),
+            layout,
+            datatype: self.datatype,
+        }
+    }
+
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub(crate) fn datatype(&self) -> DataTypeEnum {
+        self.datatype
+    }
+
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
+    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+        &self.buffer
+    }
 }
 
 pub struct Tensor<const R: usize, D> {
-    device: Device,
-    buffer: Arc<wgpu::Buffer>,
-    layout: Layout<R, D>,
+    data: TensorData,
+    datatype: PhantomData<D>,
+}
+
+impl<const R: usize, D: DataType> From<TensorData> for Tensor<R, D> {
+    fn from(value: TensorData) -> Self {
+        Self {
+            data: value,
+            datatype: PhantomData,
+        }
+    }
 }
 
 impl<const R: usize, D> Clone for Tensor<R, D> {
     fn clone(&self) -> Self {
         Self {
-            device: self.device.clone(),
-            buffer: self.buffer.clone(),
-            layout: self.layout,
+            data: self.data.clone(),
+            datatype: PhantomData,
         }
     }
 }
@@ -123,81 +248,44 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         data: I,
         shape: [usize; R],
     ) -> Self {
-        // MODIFIED from: https://github.com/gfx-rs/wgpu/blob/d8833d079833c62b4fd00325d0ba08ec0c8bc309/wgpu/src/util/device.rs#L38
-        fn create_aligned_buffer(
-            element_size: u64,
-            shape: &[usize],
-            device: &Device,
-        ) -> (wgpu::Buffer, u64) {
-            let size = element_size * shape.iter().copied().product::<usize>() as u64;
-
-            let padded_size = padded_tensor_size(size);
-
-            let wgt_descriptor = BufferDescriptor {
-                label: None,
-                size: padded_size,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: true,
-            };
-
-            let buffer = device.wgpu_device().create_buffer(&wgt_descriptor);
-            (buffer, size)
-        }
-        let (buffer, unpadded_size) = create_aligned_buffer(size_of::<D>() as u64, &shape, device);
-
-        buffer.slice(..).get_mapped_range_mut()[..unpadded_size as usize]
-            .iter_mut()
-            .zip(data.flat_map(bytemuck::bytes_of))
-            .for_each(|(dst, src)| *dst = *src);
-        buffer.unmap();
-
-        Self::new_from_buffer(device, buffer, shape)
-    }
-
-    pub(crate) fn new_from_buffer(device: &Device, buffer: wgpu::Buffer, size: [usize; R]) -> Self {
         Self {
-            device: device.clone(),
-            buffer: Arc::new(buffer),
-            layout: Layout::contiguous(size),
+            data: TensorData::new_inner(device, data, &shape),
+            datatype: PhantomData,
         }
     }
 
     pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
         let (sender, receiver) = futures_channel::oneshot::channel();
         DownloadBuffer::read_buffer(
-            self.device.wgpu_device(),
-            self.device.wgpu_queue(),
-            &self.buffer.slice(..),
+            self.data.device.wgpu_device(),
+            self.data.device.wgpu_queue(),
+            &self.data.buffer.slice(..),
             move |result| {
                 _ = sender.send(result);
             },
         );
         let downloaded = receiver.await.map_err(|_| wgpu::BufferAsyncError)??;
 
-        Ok(TensorSlice::new(downloaded, self.layout))
+        Ok(TensorSlice::new(downloaded, self.layout().clone()))
     }
 
     pub fn slice(&self, ranges: [Range<usize>; R]) -> Self {
-        let layout = self.layout.slice(ranges);
         Self {
-            device: self.device.clone(),
-            buffer: self.buffer.clone(),
-            layout,
+            data: self.data.slice(&ranges),
+            datatype: PhantomData,
         }
     }
 
-    pub(crate) fn layout(&self) -> &Layout<R, D> {
-        &self.layout
+    pub(crate) fn layout(&self) -> &Layout {
+        self.data.layout()
+    }
+
+    pub(crate) fn data(&self) -> &TensorData {
+        &self.data
     }
 
     pub fn device(&self) -> &Device {
-        &self.device
-    }
-
-    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
+        self.data.device()
     }
 }
 
@@ -226,7 +314,8 @@ async fn test_tensor_slice() {
 
 pub struct TensorSlice<const R: usize, D> {
     buffer: DownloadBuffer,
-    layout: Layout<R, D>,
+    layout: Layout,
+    datatype: PhantomData<D>,
 }
 
 impl<D: DataType + Debug> Debug for TensorSlice<1, D> {
@@ -343,8 +432,12 @@ async fn test_tensor_compare() {
 }
 
 impl<D: DataType, const R: usize> TensorSlice<R, D> {
-    fn new(buffer: DownloadBuffer, layout: Layout<R, D>) -> Self {
-        Self { buffer, layout }
+    fn new(buffer: DownloadBuffer, layout: Layout) -> Self {
+        Self {
+            buffer,
+            layout,
+            datatype: PhantomData,
+        }
     }
 
     fn as_slice(&self) -> &[D] {
@@ -355,7 +448,7 @@ impl<D: DataType, const R: usize> TensorSlice<R, D> {
 impl<D: DataType, const R: usize> TensorSlice<R, D> {
     fn get(&self, index: [usize; R]) -> Option<&D> {
         let mut index_sum = 0;
-        let layout = self.layout;
+        let layout = &self.layout;
         for ((index_component, &stride), &size) in
             index.into_iter().zip(layout.strides()).zip(layout.shape())
         {

@@ -56,9 +56,7 @@ fn fused(c: &mut Criterion) {
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
             block_on(tensor.as_slice()).unwrap();
 
-            let fused = ElementWiseOperation::default()
-                .then(add_const(1.0))
-                .then(add_const(1.0));
+            let fused = ElementWiseOperation::new([add_const(1.0), add_const(1.0)]);
             let op = Arc::new(fused);
 
             group.bench_with_input(
@@ -95,8 +93,8 @@ fn fused(c: &mut Criterion) {
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
             block_on(tensor.as_slice()).unwrap();
 
-            let op1 = Arc::new(ElementWiseOperation::default().then(add_const(1.0)));
-            let op2 = Arc::new(ElementWiseOperation::default().then(add_const(1.0)));
+            let op1 = Arc::new(ElementWiseOperation::new([add_const(1.0)]));
+            let op2 = Arc::new(ElementWiseOperation::new([add_const(1.0)]));
 
             group.bench_with_input(
                 BenchmarkId::new("add-const-separate-wgpu", size),

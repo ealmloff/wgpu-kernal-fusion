@@ -6,43 +6,57 @@ use crate::{
     Tensor,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
-    tensor::DataType,
+    tensor::{DataType, DataTypeEnum, TensorData},
 };
 
 #[cfg(test)]
 use crate::Device;
 
 pub struct ElementWiseOperation<T> {
-    functions: Vec<ElementWiseFunction>,
-    dense_kernel: OnceLock<wgpu::ShaderModule>,
-    sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    pub(crate) untyped: UntypedElementWiseOperation,
     datatype: PhantomData<T>,
-}
-
-impl<T: DataType> Default for ElementWiseOperation<T> {
-    fn default() -> Self {
-        Self::new([])
-    }
 }
 
 impl<T: DataType> ElementWiseOperation<T> {
     pub fn new(functions: impl IntoIterator<Item = ElementWiseFunction>) -> Self {
         Self {
-            functions: functions.into_iter().collect(),
-            dense_kernel: OnceLock::new(),
-            sparse_kernel: OnceLock::new(),
+            untyped: UntypedElementWiseOperation {
+                functions: functions.into_iter().collect(),
+                dense_kernel: OnceLock::new(),
+                sparse_kernel: OnceLock::new(),
+                datatype: T::WGSL_TYPE,
+            },
             datatype: PhantomData,
         }
     }
 
-    pub fn then(self, other: ElementWiseFunction) -> Self {
-        let mut functions = self.functions;
-        functions.push(other);
+    pub fn run<const R: usize>(&self, tensor: &Tensor<R, T>) {
+        self.untyped.run_with_query(tensor.data(), None);
+    }
+
+    pub fn run_with_query<const R: usize>(
+        &self,
+        tensor: &Tensor<R, T>,
+        query: Option<&PerformanceQueries>,
+    ) {
+        self.untyped.run_with_query(tensor.data(), query);
+    }
+}
+
+pub(crate) struct UntypedElementWiseOperation {
+    functions: Vec<ElementWiseFunction>,
+    dense_kernel: OnceLock<wgpu::ShaderModule>,
+    sparse_kernel: OnceLock<wgpu::ShaderModule>,
+    datatype: DataTypeEnum,
+}
+
+impl UntypedElementWiseOperation {
+    pub fn empty(datatype: DataTypeEnum) -> Self {
         Self {
-            functions,
+            functions: Vec::new(),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
-            datatype: PhantomData,
+            datatype,
         }
     }
 
@@ -69,23 +83,27 @@ impl<T: DataType> ElementWiseOperation<T> {
     pub(crate) fn add_functions(&self, inline: bool, kernel: &mut String) {
         if !inline {
             for function in &self.functions {
-                kernel.push_str(&function.function(T::WGSL_TYPE));
+                kernel.push_str(&function.function(self.datatype));
             }
         }
     }
 
-    fn tiled_map<const R: usize>(&self, blocksize: u32, inline: bool, contiguous: bool) -> String {
-        const {
-            assert!(R <= 3, "TensorLayout only supports up to 3 rank tensors");
-        }
-
-        let dtype = T::WGSL_TYPE;
+    fn tiled_map(
+        &self,
+        blocksize: u32,
+        inline: bool,
+        contiguous: bool,
+        tensor_layout: &TensorLayout,
+    ) -> String {
+        let dtype = self.datatype;
+        let rank = tensor_layout.rank();
+        assert!(rank <= 3, "TensorLayout only supports up to 3 rank tensors");
 
         let mut kernel = String::new();
-        if dtype == "f16" {
+        if dtype == DataTypeEnum::F16 {
             kernel.push_str("enable f16;\n");
         }
-        TensorLayout::<R>::wgsl_type_definition(&mut kernel);
+        tensor_layout.wgsl_type_definition(&mut kernel);
         kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
         kernel.push_str(&format!(
             "@group(0) @binding(1) var<storage, read_write> tensor: array<{dtype}>;\n"
@@ -97,9 +115,9 @@ impl<T: DataType> ElementWiseOperation<T> {
         if contiguous {
             kernel.push_str("BLOCKSIZE");
         } else {
-            for i in 0..R {
+            for i in 0..rank {
                 kernel.push_str("BLOCKSIZE");
-                if i < R - 1 {
+                if i < rank - 1 {
                     kernel.push_str(", ");
                 }
             }
@@ -113,9 +131,9 @@ impl<T: DataType> ElementWiseOperation<T> {
                     "\t\tlet {index} = global_id.x * TILE_SIZE + {local_index};\n"
                 ));
                 kernel.push_str(&format!("\t\tif {index} < \n"));
-                for i in 0..R {
+                for i in 0..rank {
                     kernel.push_str(&format!("tensor_layout.shape_{i}"));
-                    if i < R - 1 {
+                    if i < rank - 1 {
                         kernel.push_str(" * ");
                     }
                 }
@@ -127,7 +145,7 @@ impl<T: DataType> ElementWiseOperation<T> {
                 kernel.push_str("\t\t}\n");
             }
         } else {
-            for i in 0..R {
+            for i in 0..rank {
                 let index = ["x", "y", "z"][i];
                 kernel.push_str(&format!(
                     "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE;\n"
@@ -135,15 +153,15 @@ impl<T: DataType> ElementWiseOperation<T> {
             }
             kernel.push('\n');
 
-            for i in 0..R {
+            for i in 0..rank {
                 for _ in 0..(i + 1) {
                     kernel.push('\t');
                 }
                 kernel.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
             }
 
-            for i in 0..R {
-                for _ in 0..(R + 1) {
+            for i in 0..rank {
+                for _ in 0..(rank + 1) {
                     kernel.push('\t');
                 }
                 kernel.push_str(&format!(
@@ -151,36 +169,36 @@ impl<T: DataType> ElementWiseOperation<T> {
                 ));
             }
 
-            for _ in 0..(R + 1) {
+            for _ in 0..(rank + 1) {
                 kernel.push('\t');
             }
 
             kernel.push_str("if ");
-            for i in 0..R {
+            for i in 0..rank {
                 kernel.push_str(&format!("merged_index_{i} < tensor_layout.shape_{i} && "));
             }
             kernel.push_str("true {\n");
-            for _ in 0..(R + 2) {
+            for _ in 0..(rank + 2) {
                 kernel.push('\t');
             }
             kernel.push_str("let index = tensor_layout.offset + ");
-            for i in 0..R {
+            for i in 0..rank {
                 kernel.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
             }
             kernel.push_str("0;\n");
-            for _ in 0..(R + 2) {
+            for _ in 0..(rank + 2) {
                 kernel.push('\t');
             }
             kernel.push_str("\t\t\tvar data = tensor[index];\n");
             self.modify_data(inline, &mut kernel);
             kernel.push_str("\t\t\ttensor[index] = data;\n");
 
-            for _ in 0..(R + 1) {
+            for _ in 0..(rank + 1) {
                 kernel.push('\t');
             }
             kernel.push_str("}\n");
 
-            for i in (0..R).rev() {
+            for i in (0..rank).rev() {
                 for _ in 0..(i + 1) {
                     kernel.push('\t');
                 }
@@ -193,30 +211,24 @@ impl<T: DataType> ElementWiseOperation<T> {
         kernel
     }
 
-    pub fn run<const R: usize>(&self, tensor: &Tensor<R, T>) {
-        self.run_with_query(tensor, None);
-    }
-
-    pub fn run_with_query<const R: usize>(
-        &self,
-        tensor: &Tensor<R, T>,
-        query: Option<&PerformanceQueries>,
-    ) {
+    pub fn run_with_query(&self, tensor: &TensorData, query: Option<&PerformanceQueries>) {
         let contiguous = tensor.layout().is_contiguous();
+        let rank = tensor.layout().rank();
+        let layout = TensorLayout::from(tensor.layout());
         let max_blocksize = if contiguous {
             256
         } else {
             // max_blocksize^R = 256
-            (256f64.powf(1. / R as f64)).floor() as u32
+            (256f64.powf(1. / rank as f64)).floor() as u32
         };
         let module = if contiguous {
             self.dense_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true, contiguous);
+                let source = self.tiled_map(max_blocksize, true, contiguous, &layout);
                 tensor.device().create_shader_module(source)
             })
         } else {
             self.sparse_kernel.get_or_init(|| {
-                let source = self.tiled_map::<R>(max_blocksize, true, contiguous);
+                let source = self.tiled_map(max_blocksize, true, contiguous, &layout);
                 tensor.device().create_shader_module(source)
             })
         };
@@ -267,8 +279,6 @@ impl<T: DataType> ElementWiseOperation<T> {
                 compilation_options: PipelineCompilationOptions::default(),
             },
         );
-
-        let layout = TensorLayout::for_tensor(tensor);
 
         let layout =
             tensor
@@ -368,7 +378,7 @@ impl ElementWiseFunction {
         format!("unary_{name_id}({data})")
     }
 
-    fn function(&self, dtype: &str) -> String {
+    fn function(&self, dtype: DataTypeEnum) -> String {
         let Self { name_id, operation } = self;
         format!(
             r#"fn unary_{name_id}(input: {dtype}) -> {dtype} {{
@@ -563,10 +573,7 @@ async fn test_merge_add_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    ElementWiseOperation::default()
-        .then(add_const(1.0))
-        .then(mul_const(2.0))
-        .run(&tensor);
+    ElementWiseOperation::new([add_const(1.0), mul_const(2.0)]).run(&tensor);
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);

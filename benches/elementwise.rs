@@ -40,7 +40,7 @@ fn bench_add_const(c: &mut Criterion) {
             });
             let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
             block_on(tensor.as_slice()).unwrap();
-            let op = Arc::new(ElementWiseOperation::default().then(add_const(1.0)));
+            let op = Arc::new(ElementWiseOperation::new([add_const(1.0)]));
 
             group.bench_with_input(
                 BenchmarkId::new("add-const-wgpu", size),

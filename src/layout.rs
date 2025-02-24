@@ -1,13 +1,11 @@
-use std::{marker::PhantomData, ops::Range};
-
-use crate::{Tensor, tensor::DataType};
+use std::ops::Range;
 
 pub(crate) const TILE_SIZE: u32 = 8;
 
-fn continuous_strides<const R: usize>(shape: [usize; R]) -> [usize; R] {
+fn continuous_strides(shape: &[usize]) -> Box<[usize]> {
     let mut acc = 1;
-    let mut strides = [0; R];
-    for i in (0..R).rev() {
+    let mut strides = vec![0; shape.len()].into_boxed_slice();
+    for i in (0..shape.len()).rev() {
         strides[i] = acc;
         acc *= shape[i];
     }
@@ -15,22 +13,22 @@ fn continuous_strides<const R: usize>(shape: [usize; R]) -> [usize; R] {
 }
 
 #[derive(Clone)]
-pub(crate) struct TensorLayout<const R: usize> {
+pub(crate) struct TensorLayout {
     pub(crate) data: Box<[u32]>,
 }
 
-impl<const R: usize> TensorLayout<R> {
-    pub(crate) fn for_tensor<D: DataType>(tensor: &Tensor<R, D>) -> Self {
-        let layout = *tensor.layout();
-        layout.into()
+impl TensorLayout {
+    pub(crate) fn rank(&self) -> usize {
+        (self.data.len() - 1) / 2
     }
 
-    pub(crate) fn wgsl_type_definition(kernel: &mut String) {
+    pub(crate) fn wgsl_type_definition(&self, kernel: &mut String) {
+        let rank = self.rank();
         kernel.push_str("struct TensorLayout {\n");
-        for i in 0..R {
+        for i in 0..rank {
             kernel.push_str(&format!("\tstride_{}: u32,\n", i));
         }
-        for i in 0..R {
+        for i in 0..rank {
             kernel.push_str(&format!("\tshape_{}: u32,\n", i));
         }
         kernel.push_str("\toffset: u32,\n");
@@ -38,8 +36,8 @@ impl<const R: usize> TensorLayout<R> {
     }
 }
 
-impl<const R: usize, D> From<Layout<R, D>> for TensorLayout<R> {
-    fn from(layout: Layout<R, D>) -> Self {
+impl From<&Layout> for TensorLayout {
+    fn from(layout: &Layout) -> Self {
         let data = layout
             .strides
             .iter()
@@ -51,46 +49,41 @@ impl<const R: usize, D> From<Layout<R, D>> for TensorLayout<R> {
     }
 }
 
-pub struct Layout<const R: usize, D> {
+#[derive(Clone)]
+pub struct Layout {
     offset: usize,
-    shape: [usize; R],
-    strides: [usize; R],
-    data_type: PhantomData<D>,
+    shape: Box<[usize]>,
+    strides: Box<[usize]>,
 }
 
-impl<const R: usize, D> Clone for Layout<R, D> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl<const R: usize, D> Copy for Layout<R, D> {}
-
-impl<const R: usize, D> Layout<R, D> {
-    pub fn contiguous(shape: [usize; R]) -> Self {
+impl Layout {
+    pub fn contiguous(shape: &[usize]) -> Self {
         let strides = continuous_strides(shape);
         Self {
             offset: 0,
-            shape,
+            shape: shape.into(),
             strides,
-            data_type: PhantomData,
         }
     }
 
-    pub fn from_parts(offset: usize, shape: [usize; R], strides: [usize; R]) -> Self {
+    pub fn from_parts<const R: usize>(
+        offset: usize,
+        shape: [usize; R],
+        strides: [usize; R],
+    ) -> Self {
         Self {
             offset,
-            shape,
-            strides,
-            data_type: PhantomData,
+            shape: Box::new(shape),
+            strides: Box::new(strides),
         }
     }
 
     pub fn is_contiguous(&self) -> bool {
-        self.offset == 0 && self.strides == continuous_strides(self.shape)
+        self.offset == 0 && self.strides == continuous_strides(&self.shape)
     }
 
-    pub fn slice(&self, index: [Range<usize>; R]) -> Self {
-        let shape = std::array::from_fn(|i| index[i].len());
+    pub fn slice(&self, index: &[Range<usize>]) -> Self {
+        let shape = index.iter().map(|range| range.len()).collect();
 
         let start_offset = index
             .iter()
@@ -101,16 +94,19 @@ impl<const R: usize, D> Layout<R, D> {
         Self {
             offset: start_offset,
             shape,
-            strides: self.strides,
-            data_type: PhantomData,
+            strides: self.strides.clone(),
         }
     }
 
-    pub fn shape(&self) -> &[usize; R] {
+    pub fn rank(&self) -> usize {
+        self.shape.len()
+    }
+
+    pub fn shape(&self) -> &[usize] {
         &self.shape
     }
 
-    pub fn strides(&self) -> &[usize; R] {
+    pub fn strides(&self) -> &[usize] {
         &self.strides
     }
 
@@ -121,8 +117,8 @@ impl<const R: usize, D> Layout<R, D> {
 
 #[test]
 fn test_contiguous() {
-    let layout = Layout::<2, f32>::contiguous([2, 3]);
+    let layout = Layout::contiguous(&[2, 3]);
     assert!(layout.is_contiguous());
-    assert!(!layout.slice([0..1, 0..1]).is_contiguous());
-    assert!(!layout.slice([1..2, 0..3]).is_contiguous());
+    assert!(!layout.slice(&[0..1, 0..1]).is_contiguous());
+    assert!(!layout.slice(&[1..2, 0..3]).is_contiguous());
 }
