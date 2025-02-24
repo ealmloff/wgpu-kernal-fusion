@@ -358,6 +358,7 @@ impl UntypedElementWiseOperation {
 
 #[derive(Clone)]
 pub struct ElementWiseFunction {
+    name: Option<String>,
     name_id: u64,
     operation: String,
 }
@@ -368,9 +369,15 @@ impl ElementWiseFunction {
         let name_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Self {
+            name: None,
             name_id,
             operation: operation.to_string(),
         }
+    }
+
+    fn with_name(mut self, name: impl ToString) -> Self {
+        self.name = Some(name.to_string());
+        self
     }
 
     fn call(&self, data: impl Display) -> String {
@@ -379,7 +386,9 @@ impl ElementWiseFunction {
     }
 
     fn function(&self, dtype: DataTypeEnum) -> String {
-        let Self { name_id, operation } = self;
+        let Self {
+            name_id, operation, ..
+        } = self;
         format!(
             r#"fn unary_{name_id}(input: {dtype}) -> {dtype} {{
     var data = input;
@@ -403,7 +412,7 @@ impl ElementWiseFunction {
 }
 
 pub fn add_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data + {};", value))
+    ElementWiseFunction::new(format!("data = data + {};", value)).with_name("add")
 }
 
 #[cfg(test)]
@@ -586,7 +595,7 @@ async fn test_merge_add_const() {
 }
 
 pub fn sub_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data - {};", value))
+    ElementWiseFunction::new(format!("data = data - {};", value)).with_name("subtract")
 }
 
 #[cfg(test)]
@@ -615,7 +624,7 @@ async fn test_sub_const() {
 }
 
 pub fn mul_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data * {};", value))
+    ElementWiseFunction::new(format!("data = data * {};", value)).with_name("multiply")
 }
 
 #[cfg(test)]
@@ -644,7 +653,7 @@ async fn test_mul_const() {
 }
 
 pub fn div_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data / {};", value))
+    ElementWiseFunction::new(format!("data = data / {};", value)).with_name("divide")
 }
 
 #[cfg(test)]
@@ -673,7 +682,7 @@ async fn test_div_const() {
 }
 
 pub fn exp() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = exp(data);")
+    ElementWiseFunction::new("data = exp(data);").with_name("exp")
 }
 
 #[cfg(test)]
@@ -702,7 +711,7 @@ async fn test_exp() {
 }
 
 pub fn exp2() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = exp2(data);")
+    ElementWiseFunction::new("data = exp2(data);").with_name("exp2")
 }
 
 #[cfg(test)]
@@ -731,7 +740,7 @@ async fn test_exp2() {
 }
 
 pub fn log() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = log(data);")
+    ElementWiseFunction::new("data = log(data);").with_name("log")
 }
 
 #[cfg(test)]
@@ -760,7 +769,7 @@ async fn test_log() {
 }
 
 pub fn log2() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = log2(data);")
+    ElementWiseFunction::new("data = log2(data);").with_name("log2")
 }
 
 #[cfg(test)]
@@ -789,7 +798,7 @@ async fn test_log2() {
 }
 
 pub fn sqrt() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sqrt(data);")
+    ElementWiseFunction::new("data = sqrt(data);").with_name("sqrt")
 }
 
 #[cfg(test)]
@@ -818,7 +827,7 @@ async fn test_sqrt() {
 }
 
 pub fn sin() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sin(data);")
+    ElementWiseFunction::new("data = sin(data);").with_name("sin")
 }
 
 #[cfg(test)]
@@ -847,7 +856,7 @@ async fn test_sin() {
 }
 
 pub fn cos() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = cos(data);")
+    ElementWiseFunction::new("data = cos(data);").with_name("cos")
 }
 
 #[cfg(test)]
@@ -876,7 +885,7 @@ async fn test_cos() {
 }
 
 pub fn tan() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = tan(data);")
+    ElementWiseFunction::new("data = tan(data);").with_name("tan")
 }
 
 #[cfg(test)]
@@ -905,7 +914,7 @@ async fn test_tan() {
 }
 
 pub fn asin() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = asin(data);")
+    ElementWiseFunction::new("data = asin(data);").with_name("asin")
 }
 
 #[cfg(test)]
@@ -938,7 +947,7 @@ async fn test_asin() {
 }
 
 pub fn acos() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = acos(data);")
+    ElementWiseFunction::new("data = acos(data);").with_name("acos")
 }
 
 #[cfg(test)]
@@ -971,7 +980,7 @@ async fn test_acos() {
 }
 
 pub fn atan() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = atan(data);")
+    ElementWiseFunction::new("data = atan(data);").with_name("atan")
 }
 
 #[cfg(test)]
@@ -1000,7 +1009,7 @@ async fn test_atan() {
 }
 
 pub fn sinh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sinh(data);")
+    ElementWiseFunction::new("data = sinh(data);").with_name("sinh")
 }
 
 #[cfg(test)]
@@ -1029,7 +1038,7 @@ async fn test_sinh() {
 }
 
 pub fn cosh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = cosh(data);")
+    ElementWiseFunction::new("data = cosh(data);").with_name("cosh")
 }
 
 #[cfg(test)]
@@ -1058,7 +1067,7 @@ async fn test_cosh() {
 }
 
 pub fn tanh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = tanh(data);")
+    ElementWiseFunction::new("data = tanh(data);").with_name("tanh")
 }
 
 #[cfg(test)]
@@ -1087,7 +1096,7 @@ async fn test_tanh() {
 }
 
 pub fn asinh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = asinh(data);")
+    ElementWiseFunction::new("data = asinh(data);").with_name("asinh")
 }
 
 #[cfg(test)]
@@ -1120,7 +1129,7 @@ async fn test_asinh() {
 }
 
 pub fn acosh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = acosh(data);")
+    ElementWiseFunction::new("data = acosh(data);").with_name("acosh")
 }
 
 #[cfg(test)]
@@ -1153,7 +1162,7 @@ async fn test_acosh() {
 }
 
 pub fn atanh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = atanh(data);")
+    ElementWiseFunction::new("data = atanh(data);").with_name("atanh")
 }
 
 #[cfg(test)]
@@ -1186,7 +1195,7 @@ async fn test_atanh() {
 }
 
 pub fn abs() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = abs(data);")
+    ElementWiseFunction::new("data = abs(data);").with_name("abs")
 }
 
 #[cfg(test)]
