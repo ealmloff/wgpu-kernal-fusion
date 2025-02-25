@@ -416,6 +416,7 @@ impl UntypedPairWiseKernel {
 
 #[derive(Clone)]
 pub struct PairWiseFunction {
+    name: Option<String>,
     name_id: u64,
     operation: String,
 }
@@ -426,9 +427,19 @@ impl PairWiseFunction {
         let name_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Self {
+            name: None,
             name_id,
             operation: operation.to_string(),
         }
+    }
+
+    pub fn with_name(mut self, name: impl ToString) -> Self {
+        self.name = Some(name.to_string());
+        self
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("pair_wise")
     }
 
     fn call(&self, a: impl Display, b: impl Display) -> String {
@@ -450,7 +461,7 @@ impl PairWiseFunction {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn add(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a + b;")))
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a + b;")).with_name("add"))
     }
 }
 
@@ -617,7 +628,7 @@ async fn test_pair_wise_add_sparse() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn sub(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a - b;")))
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a - b;")).with_name("sub"))
     }
 }
 
@@ -652,7 +663,7 @@ async fn test_pair_wise_sub() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn mul(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a * b;")))
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a * b;")).with_name("mul"))
     }
 }
 
@@ -687,7 +698,7 @@ async fn test_pair_wise_mul() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn div(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a / b;")))
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a / b;")).with_name("div"))
     }
 }
 
@@ -722,7 +733,7 @@ async fn test_pair_wise_div() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn pow(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = pow(a, b);")))
+        self.pair_wise(other, PairWiseFunction::new(format!("data = pow(a, b);")).with_name("pow"))
     }
 }
 

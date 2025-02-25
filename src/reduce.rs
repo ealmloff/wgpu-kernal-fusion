@@ -457,6 +457,7 @@ impl UntypedReduceKernel {
 
 #[derive(Clone)]
 pub struct ReduceFunction {
+    name: Option<String>,
     name_id: u64,
     operation: String,
     initial_value: String,
@@ -468,10 +469,20 @@ impl ReduceFunction {
         let name_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         Self {
+            name: None,
             name_id,
             operation: operation.to_string(),
             initial_value: initial_value.to_string(),
         }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("reduce")
+    }
+
+    pub fn with_name(mut self, name: impl ToString) -> Self {
+        self.name = Some(name.to_string());
+        self
     }
 
     fn call(&self, a: impl Display, b: impl Display) -> String {
@@ -495,10 +506,9 @@ impl ReduceFunction {
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sum(&self) -> Self {
-        self.reduce(ReduceFunction::new(
-            "merged = merged + data;".to_string(),
-            "0.0",
-        ))
+        self.reduce(
+            ReduceFunction::new("merged = merged + data;".to_string(), "0.0").with_name("sum"),
+        )
     }
 }
 
@@ -680,10 +690,10 @@ async fn test_reduce_const_sum_then_add_fused() {
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn max(&self) -> Self {
-        self.reduce(ReduceFunction::new(
-            "merged = max(merged, data);".to_string(),
-            "-3.40282e+38",
-        ))
+        self.reduce(
+            ReduceFunction::new("merged = max(merged, data);".to_string(), "-3.40282e+38")
+                .with_name("max"),
+        )
     }
 }
 
@@ -722,10 +732,10 @@ async fn test_reduce_max() {
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn min(&self) -> Self {
-        self.reduce(ReduceFunction::new(
-            "merged = min(merged, data);".to_string(),
-            "3.40282e+38",
-        ))
+        self.reduce(
+            ReduceFunction::new("merged = min(merged, data);".to_string(), "3.40282e+38")
+                .with_name("min"),
+        )
     }
 }
 
@@ -764,10 +774,9 @@ async fn test_reduce_min() {
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn product(&self) -> Self {
-        self.reduce(ReduceFunction::new(
-            "merged = merged * data;".to_string(),
-            "1.0",
-        ))
+        self.reduce(
+            ReduceFunction::new("merged = merged * data;".to_string(), "1.0").with_name("product"),
+        )
     }
 }
 

@@ -4,13 +4,14 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use wgpu::wgc::identity;
 
 use crate::{
     ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
     UntypedElementWiseKernel, UntypedPairWiseKernel, UntypedReduceKernel, matmul::UntypedMatMul,
     tensor::TensorData,
 };
-use tabbycat::{AttrList, Edge, GraphBuilder, GraphType, Identity, StmtList, SubGraph};
+use tabbycat::{AttrList, Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList, SubGraph};
 use tabbycat::{Graph, attributes::*};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -158,7 +159,18 @@ impl ComputeGraph {
         self.with_mut(|inner| inner.tensor.insert(id, info));
         id
     }
+}
 
+#[derive(Default)]
+struct ComputeGraphInner {
+    element_wise: HashMap<ElementWiseComputeNodeKey, ElementWiseOperation>,
+    pair_wise: HashMap<PairWiseComputeNodeKey, PairWiseOperation>,
+    mat_mul: HashMap<MatMulComputeNodeKey, MatMulOperation>,
+    reduce: HashMap<ReduceComputeNodeKey, ReduceOperation>,
+    tensor: HashMap<TensorComputeNodeKey, TensorData>,
+}
+
+impl ComputeGraphInner {
     pub(crate) fn resolve(&self, key: AnyComputeKey) -> TensorData {
         match key {
             AnyComputeKey::ElementWiseComputeNodeKey(element_wise_compute_node_key) => {
@@ -180,16 +192,17 @@ impl ComputeGraph {
     }
 
     fn resolve_element_wise(&self, key: ElementWiseComputeNodeKey) -> TensorData {
-        let operation = self.with_mut(|inner| inner.element_wise.get(&key).unwrap().clone());
+        let operation = self.element_wise.get(&key).unwrap();
 
         let input = self.resolve(operation.value);
-        let kernel = UntypedElementWiseKernel::new(vec![operation.function], input.datatype());
+        let kernel =
+            UntypedElementWiseKernel::new(vec![operation.function.clone()], input.datatype());
         kernel.run_with_query(&input, None);
         input
     }
 
     fn resolve_pair_wise(&self, key: PairWiseComputeNodeKey) -> TensorData {
-        let operation = self.with_mut(|inner| inner.pair_wise.get(&key).unwrap().clone());
+        let operation = self.pair_wise.get(&key).unwrap();
 
         let first = self.resolve(operation.first);
         let second = self.resolve(operation.second);
@@ -199,7 +212,7 @@ impl ComputeGraph {
     }
 
     fn resolve_mat_mul(&self, key: MatMulComputeNodeKey) -> TensorData {
-        let operation = self.with_mut(|inner| inner.mat_mul.get(&key).unwrap().clone());
+        let operation = self.mat_mul.get(&key).unwrap();
 
         let first = self.resolve(operation.first);
         let second = self.resolve(operation.second);
@@ -209,7 +222,7 @@ impl ComputeGraph {
     }
 
     fn resolve_reduce(&self, key: ReduceComputeNodeKey) -> TensorData {
-        let operation = self.with_mut(|inner| inner.reduce.get(&key).unwrap().clone());
+        let operation = self.reduce.get(&key).unwrap();
 
         let input = self.resolve(operation.value);
         let kernel = UntypedReduceKernel::new(operation.function.clone(), input.datatype());
@@ -218,44 +231,126 @@ impl ComputeGraph {
     }
 
     fn resolve_tensor(&self, key: TensorComputeNodeKey) -> TensorData {
-        self.with_mut(|inner| inner.tensor.get(&key).unwrap().clone())
+        self.tensor.get(&key).unwrap().clone()
     }
 
-    fn graphvis(&self) -> Graph {
+    pub(crate) fn graphvis(&self, root: AnyComputeKey) -> Graph {
+        let mut statements = Vec::new();
+        self.add_node_to_graph(&mut statements, root);
         GraphBuilder::default()
             .graph_type(GraphType::DiGraph)
             .strict(false)
-            .id(Identity::id("G").unwrap())
-            .stmts(
-                StmtList::new()
-                    .add_node(
-                        Identity::id("A").unwrap(),
-                        None,
-                        Some(AttrList::new().add_pair(color(Color::Red))),
-                    )
-                    .add_edge(
-                        Edge::head_node(Identity::id("B").unwrap(), None)
-                            .arrow_to_node(Identity::id("C").unwrap(), None)
-                            .add_attrpair(arrowhead(ArrowShape::Diamond)),
-                    )
-                    .add_subgraph(SubGraph::subgraph(
-                        Some(Identity::id("D").unwrap()),
-                        StmtList::new().add_edge(
-                            Edge::head_node(Identity::id("E").unwrap(), None)
-                                .arrow_to_node(Identity::id("F").unwrap(), None),
-                        ),
-                    )),
-            )
+            .stmts(StmtList::new().extend(statements))
             .build()
             .unwrap()
     }
-}
 
-#[derive(Default)]
-struct ComputeGraphInner {
-    element_wise: HashMap<ElementWiseComputeNodeKey, ElementWiseOperation>,
-    pair_wise: HashMap<PairWiseComputeNodeKey, PairWiseOperation>,
-    mat_mul: HashMap<MatMulComputeNodeKey, MatMulOperation>,
-    reduce: HashMap<ReduceComputeNodeKey, ReduceOperation>,
-    tensor: HashMap<TensorComputeNodeKey, TensorData>,
+    fn add_node_to_graph(&self, graph: &mut Vec<Stmt>, key: AnyComputeKey) -> Identity {
+        match key {
+            AnyComputeKey::ElementWiseComputeNodeKey(element_wise_compute_node_key) => {
+                self.add_element_wise_to_graph(graph, element_wise_compute_node_key)
+            }
+            AnyComputeKey::PairWiseComputeNodeKey(pair_wise_compute_node_key) => {
+                self.add_pair_wise_to_graph(graph, pair_wise_compute_node_key)
+            }
+            AnyComputeKey::MatMulComputeNodeKey(mat_mul_compute_node_key) => {
+                self.add_mat_mul_to_graph(graph, mat_mul_compute_node_key)
+            }
+            AnyComputeKey::ReduceComputeNodeKey(reduce_compute_node_key) => {
+                self.add_reduce_to_graph(graph, reduce_compute_node_key)
+            }
+            AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
+                self.add_tensor_to_graph(graph, tensor_compute_node_key)
+            }
+        }
+    }
+
+    fn add_element_wise_to_graph(
+        &self,
+        graph: &mut Vec<Stmt>,
+        key: ElementWiseComputeNodeKey,
+    ) -> Identity {
+        let operation = self.element_wise.get(&key).unwrap();
+        let input = self.add_node_to_graph(graph, operation.value);
+        let id = Identity::id(operation.function.name()).unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(input, None),
+        ));
+        id
+    }
+
+    fn add_pair_wise_to_graph(
+        &self,
+        graph: &mut Vec<Stmt>,
+        key: PairWiseComputeNodeKey,
+    ) -> Identity {
+        let operation = self.pair_wise.get(&key).unwrap();
+        let first = self.add_node_to_graph(graph, operation.first);
+        let second = self.add_node_to_graph(graph, operation.second);
+        let id = Identity::id(operation.function.name()).unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(first, None),
+        ));
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(second, None),
+        ));
+        id
+    }
+
+    fn add_mat_mul_to_graph(&self, graph: &mut Vec<Stmt>, key: MatMulComputeNodeKey) -> Identity {
+        let operation = self.mat_mul.get(&key).unwrap();
+        let first = self.add_node_to_graph(graph, operation.first);
+        let second = self.add_node_to_graph(graph, operation.second);
+        let id = Identity::id("matmul").unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(first, None),
+        ));
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(second, None),
+        ));
+        id
+    }
+
+    fn add_reduce_to_graph(&self, graph: &mut Vec<Stmt>, key: ReduceComputeNodeKey) -> Identity {
+        let operation = self.reduce.get(&key).unwrap();
+        let input = self.add_node_to_graph(graph, operation.value);
+        let id = Identity::id(operation.function.name()).unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(input, None),
+        ));
+        id
+    }
+
+    fn add_tensor_to_graph(&self, graph: &mut Vec<Stmt>, key: TensorComputeNodeKey) -> Identity {
+        let id = Identity::id(format!("tensor_{}", key.0)).unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(id.clone(), None),
+        ));
+        id
+    }
 }

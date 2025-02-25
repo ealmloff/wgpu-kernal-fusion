@@ -365,6 +365,10 @@ impl ElementWiseFunction {
         self
     }
 
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("element_wise")
+    }
+
     fn call(&self, data: impl Display) -> String {
         let name_id = self.name_id;
         format!("unary_{name_id}({data})")
