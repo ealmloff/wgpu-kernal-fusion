@@ -58,11 +58,12 @@ impl UntypedElementWiseKernel {
             let call = self
                 .functions
                 .iter()
+                .rev()
                 .fold(format!("data"), |acc, f| f.call(acc));
 
             kernel.push_str(&format!("data = {call};\n"));
         } else {
-            for function in &self.functions {
+            for function in self.functions.iter().rev() {
                 kernel.push_str(&function.operation);
                 kernel.push('\n');
             }

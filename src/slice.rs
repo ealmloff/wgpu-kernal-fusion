@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::{compute_graph::AnyComputeKey, DataType, Tensor, TensorData};
+use crate::{DataType, Tensor, TensorData, compute_graph::AnyComputeKey};
 
 pub(crate) struct SliceOperation {
     pub(crate) input: AnyComputeKey,

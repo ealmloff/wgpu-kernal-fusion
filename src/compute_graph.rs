@@ -238,11 +238,17 @@ impl ComputeGraphInner {
         key: ElementWiseComputeNodeKey,
         command_encoder: &mut CommandEncoder,
     ) -> TensorData {
-        let operation = self.element_wise.get(&key).unwrap();
+        // First collect all element wise ops in this chain
+        let mut functions = Vec::new();
+        let mut current_key = AnyComputeKey::ElementWiseComputeNodeKey(key);
+        while let AnyComputeKey::ElementWiseComputeNodeKey(key) = current_key {
+            let operation = self.element_wise.get(&key).unwrap();
+            functions.push(operation.function.clone());
+            current_key = operation.value;
+        }
 
-        let input = self.resolve(operation.value, &mut *command_encoder);
-        let kernel =
-            UntypedElementWiseKernel::new(vec![operation.function.clone()], input.datatype());
+        let input = self.resolve(current_key, &mut *command_encoder);
+        let kernel = UntypedElementWiseKernel::new(functions, input.datatype());
         kernel.run_with_query(&input, None, command_encoder);
         input
     }
