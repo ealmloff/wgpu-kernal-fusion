@@ -1,6 +1,5 @@
 use std::{
     fmt::Display,
-    marker::PhantomData,
     ops::{Add, Div, Mul, Sub},
     sync::OnceLock,
 };
@@ -490,12 +489,10 @@ async fn test_pair_wise_add() {
     let data_b = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
-    let query = PerformanceQueries::new(&device);
 
-    PairWiseOperation::new(add()).run_with_query(&tensor_a, &tensor_b, Some(&query));
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a + &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
-    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], 1. + 1.);
     assert_eq!(as_slice[[0, 1]], 2. + 2.);
@@ -529,12 +526,10 @@ async fn test_pair_wise_add_f16() {
     ];
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
-    let query = PerformanceQueries::new(&device);
 
-    PairWiseOperation::new(add()).run_with_query(&tensor_a, &tensor_b, Some(&query));
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a + &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
-    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1. + 1.));
     assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2. + 2.));
@@ -547,7 +542,7 @@ async fn test_pair_wise_add_f16() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_const_mul_const_add_fused() {
-    use crate::{Device, ElementWiseOperation, add_const, mul_const};
+    use crate::Device;
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -561,11 +556,8 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let mut op = PairWiseOperation::new(add());
-    op.untyped.pre_element_wise[0] = ElementWiseOperation::<f32>::new([add_const(1.)]).untyped;
-    op.untyped.pre_element_wise[1] = ElementWiseOperation::<f32>::new([mul_const(2.)]).untyped;
-    op.run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &(tensor_a + 1.) + &(tensor_b * 2.);
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], (1. + 1.) + (1. * 2.));
@@ -579,7 +571,7 @@ async fn test_pair_wise_add_const_mul_const_add_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_pair_wise_add_sub_const_fused() {
-    use crate::{Device, ElementWiseOperation, sub_const};
+    use crate::Device;
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -593,10 +585,8 @@ async fn test_pair_wise_add_sub_const_fused() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let mut op = PairWiseOperation::new(add());
-    op.untyped.post_element_wise = ElementWiseOperation::<f32>::new([sub_const(1.)]).untyped;
-    op.run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = (&tensor_a + &tensor_b) - 1.;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. + 1. - 1.);
@@ -626,8 +616,8 @@ async fn test_pair_wise_add_sparse() {
     let tensor_b = Tensor::new(&device, &data_b);
     let tensor_b = tensor_b.slice([0..3, 0..1]);
 
-    PairWiseOperation::new(add()).run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a + &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. + 1.);
@@ -663,8 +653,8 @@ async fn test_pair_wise_sub() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    PairWiseOperation::new(sub()).run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a - &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. - 1.);
@@ -703,8 +693,8 @@ async fn test_pair_wise_mul() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    PairWiseOperation::new(mul()).run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a * &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. * 1.);
@@ -743,8 +733,8 @@ async fn test_pair_wise_div() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    PairWiseOperation::new(div()).run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a / &tensor_b;
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. / 1.);
@@ -781,8 +771,8 @@ async fn test_pair_wise_pow() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    PairWiseOperation::new(pow()).run(&tensor_a, &tensor_b);
-    let as_slice = tensor_b.as_slice().await.unwrap();
+    let tensor = &tensor_a.pow(&tensor_b);
+    let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 
     assert!((as_slice[[0, 0]] - 1_f32.powf(1.)) < 0.001);

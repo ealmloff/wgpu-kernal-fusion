@@ -1,6 +1,5 @@
 use std::{
     fmt::Display,
-    marker::PhantomData,
     ops::{Add, Div, Mul, Sub},
     sync::OnceLock,
 };
@@ -422,13 +421,11 @@ async fn test_add_const() {
         [[5., 6.], [5., 6.]],
     ];
     let tensor = Tensor::new(&device, &data);
-    let query = PerformanceQueries::new(&device);
 
-    add_const(1.0).run_with_query(&tensor, Some(&query));
+    let tensor = tensor + 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
-    println!("{}", query.wait_for_results().await);
     let result = [
         [[2.0, 3.0], [2.0, 3.0]],
         [[4.0, 5.0], [4.0, 5.0]],
@@ -440,7 +437,7 @@ async fn test_add_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    add_const(1.0).run(&tensor);
+    let tensor = tensor + 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     assert_eq!(output[[0, 0]], 2.);
@@ -453,7 +450,7 @@ async fn test_add_const() {
     let data = [1., 2.];
     let tensor = Tensor::new(&device, &data);
 
-    add_const(1.0).run(&tensor);
+    let tensor = tensor + 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     assert_eq!(output[[0]], 2.);
@@ -486,13 +483,11 @@ async fn test_add_const_f16() {
         ],
     ];
     let tensor = Tensor::new(&device, &data);
-    let query = PerformanceQueries::new(&device);
 
-    add_const(1.0).run_with_query(&tensor, Some(&query));
+    let tensor = tensor + 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
-    println!("{}", query.wait_for_results().await);
     let result = [
         [
             [half::f16::from_f32(2.0), half::f16::from_f32(3.0)],
@@ -525,16 +520,13 @@ async fn test_add_const_sliced() {
     let tensor = Tensor::new(&device, &data);
     let sliced = tensor.slice([0..3, 0..1]);
 
-    add_const(1.0).run(&sliced);
+    let sliced = sliced + 1.0;
 
-    let output = tensor.as_slice().await.unwrap();
+    let output = sliced.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0, 0]], 2.);
-    assert_eq!(output[[0, 1]], 2.);
     assert_eq!(output[[1, 0]], 4.);
-    assert_eq!(output[[1, 1]], 4.);
     assert_eq!(output[[2, 0]], 6.);
-    assert_eq!(output[[2, 1]], 6.);
 }
 
 #[cfg(test)]
@@ -551,7 +543,7 @@ async fn test_add_const_large() {
     let data = vec![10.; BUF_SIZE];
     let tensor = Tensor::new(&device, &data);
 
-    add_const(1.0).run(&tensor);
+    let tensor = tensor + 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     for i in 0..BUF_SIZE {
@@ -572,7 +564,7 @@ async fn test_merge_add_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    ElementWiseOperation::new([add_const(1.0), mul_const(2.0)]).run(&tensor);
+    let tensor = (tensor + 1.0) * 2.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -609,7 +601,7 @@ async fn test_sub_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    sub_const(1.0).run(&tensor);
+    let tensor = tensor - 1.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -646,7 +638,7 @@ async fn test_mul_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    mul_const(2.0).run(&tensor);
+    let tensor = tensor * 2.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -683,7 +675,7 @@ async fn test_div_const() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    div_const(2.0).run(&tensor);
+    let tensor = tensor / 2.0;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -717,7 +709,7 @@ async fn test_exp() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    exp().run(&tensor);
+    let tensor = tensor.exp();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -751,7 +743,7 @@ async fn test_exp2() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    exp2().run(&tensor);
+    let tensor = tensor.exp2();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -785,7 +777,7 @@ async fn test_log() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    log().run(&tensor);
+    let tensor = tensor.log();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -819,7 +811,7 @@ async fn test_log2() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    log2().run(&tensor);
+    let tensor = tensor.log2();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -853,7 +845,7 @@ async fn test_sqrt() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    sqrt().run(&tensor);
+    let tensor = tensor.sqrt();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -887,7 +879,7 @@ async fn test_sin() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    sin().run(&tensor);
+    let tensor = tensor.sin();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -921,7 +913,7 @@ async fn test_cos() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    cos().run(&tensor);
+    let tensor = tensor.cos();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -955,7 +947,7 @@ async fn test_tan() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    tan().run(&tensor);
+    let tensor = tensor.tan();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -993,7 +985,7 @@ async fn test_asin() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    asin().run(&tensor);
+    let tensor = tensor.asin();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1031,7 +1023,7 @@ async fn test_acos() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    acos().run(&tensor);
+    let tensor = tensor.acos();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1065,7 +1057,7 @@ async fn test_atan() {
     let data = [[1. / 1., 1. / 2.], [1. / 3., 1. / 4.], [1. / 5., 1. / 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    atan().run(&tensor);
+    let tensor = tensor.atan();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1099,7 +1091,7 @@ async fn test_sinh() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    sinh().run(&tensor);
+    let tensor = tensor.sinh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1133,7 +1125,7 @@ async fn test_cosh() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    cosh().run(&tensor);
+    let tensor = tensor.cosh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1167,7 +1159,7 @@ async fn test_tanh() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    tanh().run(&tensor);
+    let tensor = tensor.tanh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1205,7 +1197,7 @@ async fn test_asinh() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    asinh().run(&tensor);
+    let tensor = tensor.asinh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1243,7 +1235,7 @@ async fn test_acosh() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    acosh().run(&tensor);
+    let tensor = tensor.acosh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1281,7 +1273,7 @@ async fn test_atanh() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    atanh().run(&tensor);
+    let tensor = tensor.atanh();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -1316,7 +1308,7 @@ async fn test_abs() {
 
     let tensor = Tensor::new(&device, &data);
 
-    abs().run(&tensor);
+    let tensor = tensor.abs();
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);

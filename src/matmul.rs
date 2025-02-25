@@ -1,9 +1,9 @@
-use std::{marker::PhantomData, sync::OnceLock};
+use std::sync::OnceLock;
 
 use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    Device, PairWiseFunction, Tensor,
+    Device, Tensor,
     compute_graph::AnyComputeKey,
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
@@ -230,13 +230,12 @@ async fn test_matmul() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let query = PerformanceQueries::new(&device);
-    let tensor = MatMul::new()
-        .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
-        .await;
+    // let tensor = MatMul::new()
+    //     .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
+    //     .await;
+    let tensor = tensor_a.mat_mul(&tensor_b);
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
-    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], 1.);
     assert_eq!(as_slice[[0, 1]], 2.);
@@ -259,13 +258,9 @@ async fn test_matmul_f16() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let query = PerformanceQueries::new(&device);
-    let tensor = MatMul::new()
-        .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
-        .await;
+    let tensor = tensor_a.mat_mul(&tensor_b);
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
-    println!("{}", query.wait_for_results().await);
 
     assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1.));
     assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2.));
@@ -318,7 +313,7 @@ async fn fuzz_matmul() {
 
         let dot = ndarray_a.dot(&ndarray_b);
 
-        let tensor = MatMul::new().run(&device, &tensor_a, &tensor_b).await;
+        let tensor = tensor_a.mat_mul(&tensor_b);
         let as_slice = tensor.as_slice().await.unwrap();
         for i in 0..size1 {
             for j in 0..size3 {
@@ -331,7 +326,7 @@ async fn fuzz_matmul() {
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
 
-    let tensor = MatMul::new().run(&device, &tensor_a, &tensor_b).await;
+    let tensor = tensor_a.mat_mul(&tensor_b);
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
 

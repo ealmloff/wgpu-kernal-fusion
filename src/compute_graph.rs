@@ -9,7 +9,7 @@ use wgpu::CommandEncoder;
 use crate::{
     Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
     UntypedElementWiseKernel, UntypedPairWiseKernel, UntypedReduceKernel, matmul::UntypedMatMul,
-    tensor::TensorData,
+    slice::SliceOperation, tensor::TensorData,
 };
 use tabbycat::Graph;
 use tabbycat::{Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList};
@@ -51,6 +51,15 @@ impl ReduceComputeNodeKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct SliceComputeNodeKey(usize);
+impl SliceComputeNodeKey {
+    fn new() -> Self {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        Self(COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TensorComputeNodeKey(usize);
 impl TensorComputeNodeKey {
     fn new() -> Self {
@@ -65,6 +74,7 @@ pub(crate) enum AnyComputeKey {
     PairWiseComputeNodeKey(PairWiseComputeNodeKey),
     MatMulComputeNodeKey(MatMulComputeNodeKey),
     ReduceComputeNodeKey(ReduceComputeNodeKey),
+    SliceComputeNodeKey(SliceComputeNodeKey),
     TensorComputeNodeKey(TensorComputeNodeKey),
 }
 
@@ -98,6 +108,12 @@ impl From<TensorComputeNodeKey> for AnyComputeKey {
     }
 }
 
+impl From<SliceComputeNodeKey> for AnyComputeKey {
+    fn from(value: SliceComputeNodeKey) -> Self {
+        Self::SliceComputeNodeKey(value)
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ComputeGraph {
     inner: Arc<ArcSwap<RwLock<ComputeGraphInner>>>,
@@ -121,6 +137,7 @@ impl ComputeGraph {
                 inner.pair_wise.extend(other_inner.pair_wise.drain());
                 inner.mat_mul.extend(other_inner.mat_mul.drain());
                 inner.reduce.extend(other_inner.reduce.drain());
+                inner.slice.extend(other_inner.slice.drain());
                 inner.tensor.extend(other_inner.tensor.drain());
             })
         });
@@ -154,6 +171,12 @@ impl ComputeGraph {
         id
     }
 
+    pub(crate) fn create_slice(&self, op: SliceOperation) -> SliceComputeNodeKey {
+        let id = SliceComputeNodeKey::new();
+        self.with_mut(|inner| inner.slice.insert(id, op));
+        id
+    }
+
     pub(crate) fn create_tensor(&self, info: TensorData) -> TensorComputeNodeKey {
         let id = TensorComputeNodeKey::new();
         self.with_mut(|inner| inner.tensor.insert(id, info));
@@ -176,6 +199,7 @@ struct ComputeGraphInner {
     pair_wise: HashMap<PairWiseComputeNodeKey, PairWiseOperation>,
     mat_mul: HashMap<MatMulComputeNodeKey, MatMulOperation>,
     reduce: HashMap<ReduceComputeNodeKey, ReduceOperation>,
+    slice: HashMap<SliceComputeNodeKey, SliceOperation>,
     tensor: HashMap<TensorComputeNodeKey, TensorData>,
 }
 
@@ -202,6 +226,9 @@ impl ComputeGraphInner {
             }
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
                 self.resolve_tensor(tensor_compute_node_key, command_encoder)
+            }
+            AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
+                self.resolve_slice(slice_compute_node_key, command_encoder)
             }
         }
     }
@@ -256,7 +283,18 @@ impl ComputeGraphInner {
 
         let input = self.resolve(operation.value, &mut *command_encoder);
         let kernel = UntypedReduceKernel::new(operation.function.clone(), input.datatype());
-        kernel.run_with_query(&input, 0, None, command_encoder)
+        kernel.run_with_query(&input, operation.axis, None, command_encoder)
+    }
+
+    fn resolve_slice(
+        &self,
+        key: SliceComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
+        let operation = self.slice.get(&key).unwrap();
+        let input = self.resolve(operation.input, &mut *command_encoder);
+
+        operation.run(&input)
     }
 
     fn resolve_tensor(&self, key: TensorComputeNodeKey, _: &mut CommandEncoder) -> TensorData {
@@ -291,6 +329,9 @@ impl ComputeGraphInner {
             }
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
                 self.add_tensor_to_graph(graph, tensor_compute_node_key)
+            }
+            AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
+                self.add_slice_to_graph(graph, slice_compute_node_key)
             }
         }
     }
@@ -367,6 +408,21 @@ impl ComputeGraphInner {
         });
         graph.push(Stmt::Edge(
             Edge::head_node(id.clone(), None).arrow_to_node(input, None),
+        ));
+        id
+    }
+
+    fn add_slice_to_graph(&self, graph: &mut Vec<Stmt>, key: SliceComputeNodeKey) -> Identity {
+        let operation = self.slice.get(&key).unwrap();
+        let input = self.add_node_to_graph(graph, operation.input);
+        let id = Identity::id("slice").unwrap();
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(id.clone(), None).arrow_to_node(input.into(), None),
         ));
         id
     }

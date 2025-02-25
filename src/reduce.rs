@@ -14,11 +14,16 @@ use crate::{
 pub(crate) struct ReduceOperation {
     pub(crate) value: AnyComputeKey,
     pub(crate) function: ReduceFunction,
+    pub(crate) axis: usize,
 }
 
 impl ReduceOperation {
-    pub fn new(value: AnyComputeKey, function: ReduceFunction) -> Self {
-        Self { value, function }
+    pub fn new(value: AnyComputeKey, function: ReduceFunction, axis: usize) -> Self {
+        Self {
+            value,
+            function,
+            axis,
+        }
     }
 }
 
@@ -501,10 +506,11 @@ impl ReduceFunction {
     }
 }
 
-impl<const R: usize, D: DataType> Tensor<R, D> {
-    pub fn sum(&self) -> Self {
+impl<D: DataType> Tensor<2, D> {
+    pub fn sum(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
             ReduceFunction::new("merged = merged + data;".to_string(), "0.0").with_name("sum"),
+            dim,
         )
     }
 }
@@ -524,18 +530,14 @@ async fn test_reduce_sum() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let add = sum();
-    let reduction = ReduceOperation::new(add);
-    let query = PerformanceQueries::new(&device);
-    let output = reduction.run_with_query(&tensor, 0, Some(&query));
+    let output = tensor.sum(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
-    println!("{}", query.wait_for_results().await);
     assert_eq!(output[[0]], 9.);
     assert_eq!(output[[1]], 12.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.sum(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -563,18 +565,14 @@ async fn test_reduce_sum_f16() {
     ];
     let tensor = Tensor::new(&device, &data);
 
-    let add = sum();
-    let reduction = ReduceOperation::new(add);
-    let query = PerformanceQueries::new(&device);
-    let output = reduction.run_with_query(&tensor, 0, Some(&query));
+    let output = tensor.sum(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
-    println!("{}", query.wait_for_results().await);
     assert_eq!(output[[0]], half::f16::from_f32(9.));
     assert_eq!(output[[1]], half::f16::from_f32(12.));
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.sum(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -599,15 +597,13 @@ async fn test_reduce_sliced_sum() {
     let tensor = Tensor::new(&device, &data);
     let tensor = tensor.slice([0..3, 0..1]);
 
-    let add = sum();
-    let reduction = ReduceOperation::new(add);
-    let output = reduction.run(&tensor, 0);
+    let output = tensor.sum(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 9.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.sum(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -619,7 +615,7 @@ async fn test_reduce_sliced_sum() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_add_then_sum_fused() {
-    use crate::{Device, ElementWiseOperation, add_const};
+    use crate::Device;
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -631,17 +627,17 @@ async fn test_reduce_const_add_then_sum_fused() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let add = sum();
-    let mut reduction = ReduceOperation::new(add);
-    reduction.untyped.pre_element_wise = ElementWiseOperation::<f32>::new([add_const(1.0)]).untyped;
-    let output = reduction.run(&tensor, 0);
+    let output = (tensor.clone() + 1.).sum(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 3. + 9.);
     assert_eq!(output[[1]], 3. + 12.);
 
-    let output = reduction.run(&tensor, 1);
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let output = (tensor + 1.).sum(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -653,7 +649,7 @@ async fn test_reduce_const_add_then_sum_fused() {
 #[cfg(test)]
 #[tokio::test]
 async fn test_reduce_const_sum_then_add_fused() {
-    use crate::{Device, ElementWiseOperation, add_const};
+    use crate::Device;
 
     let device = Device::new().await.unwrap();
     std::thread::spawn({
@@ -665,18 +661,14 @@ async fn test_reduce_const_sum_then_add_fused() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let add = sum();
-    let mut reduction = ReduceOperation::new(add);
-    reduction.untyped.post_element_wise =
-        ElementWiseOperation::<f32>::new([add_const(1.0)]).untyped;
-    let output = reduction.run(&tensor, 0);
+    let output = tensor.sum(0) + 1.;
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 1. + 9.);
     assert_eq!(output[[1]], 1. + 12.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.sum(1) + 1.;
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -685,11 +677,12 @@ async fn test_reduce_const_sum_then_add_fused() {
     assert_eq!(output[[2]], 1. + 11.);
 }
 
-impl<const R: usize, D: DataType> Tensor<R, D> {
-    pub fn max(&self) -> Self {
+impl<D: DataType> Tensor<2, D> {
+    pub fn max(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
             ReduceFunction::new("merged = max(merged, data);".to_string(), "-3.40282e+38")
                 .with_name("max"),
+            dim,
         )
     }
 }
@@ -709,16 +702,14 @@ async fn test_reduce_max() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let max = max();
-    let reduction = ReduceOperation::new(max);
-    let output = reduction.run(&tensor, 0);
+    let output = tensor.max(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 5.);
     assert_eq!(output[[1]], 6.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.max(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -727,11 +718,12 @@ async fn test_reduce_max() {
     assert_eq!(output[[2]], 6.);
 }
 
-impl<const R: usize, D: DataType> Tensor<R, D> {
-    pub fn min(&self) -> Self {
+impl<D: DataType> Tensor<2, D> {
+    pub fn min(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
             ReduceFunction::new("merged = min(merged, data);".to_string(), "3.40282e+38")
                 .with_name("min"),
+            dim,
         )
     }
 }
@@ -751,16 +743,14 @@ async fn test_reduce_min() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let min = min();
-    let reduction = ReduceOperation::new(min);
-    let output = reduction.run(&tensor, 0);
+    let output = tensor.min(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 1.);
     assert_eq!(output[[1]], 2.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.min(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -769,10 +759,11 @@ async fn test_reduce_min() {
     assert_eq!(output[[2]], 5.);
 }
 
-impl<const R: usize, D: DataType> Tensor<R, D> {
-    pub fn product(&self) -> Self {
+impl<D: DataType> Tensor<2, D> {
+    pub fn product(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
             ReduceFunction::new("merged = merged * data;".to_string(), "1.0").with_name("product"),
+            dim,
         )
     }
 }
@@ -792,16 +783,14 @@ async fn test_reduce_product() {
     let data = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor = Tensor::new(&device, &data);
 
-    let product = product();
-    let reduction = ReduceOperation::new(product);
-    let output = reduction.run(&tensor, 0);
+    let output = tensor.product(0);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);
     assert_eq!(output[[0]], 15.);
     assert_eq!(output[[1]], 48.);
 
-    let output = reduction.run(&tensor, 1);
+    let output = tensor.product(1);
 
     let output = output.as_slice().await.unwrap();
     println!("{:?}", output);

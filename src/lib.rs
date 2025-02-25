@@ -16,4 +16,5 @@ mod matmul;
 mod pair_wise;
 mod query;
 mod reduce;
+mod slice;
 mod tensor;
