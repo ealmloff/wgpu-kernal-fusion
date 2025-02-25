@@ -1,6 +1,6 @@
 use std::{fmt::Display, sync::OnceLock};
 
-use wgpu::{PipelineCompilationOptions, util::DeviceExt};
+use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Tensor, UntypedElementWiseKernel,
@@ -233,6 +233,7 @@ impl UntypedReduceKernel {
         tensor: &TensorData,
         dim: usize,
         query: Option<&PerformanceQueries>,
+        command_encoder: &mut CommandEncoder,
     ) -> TensorData {
         let shape = tensor.layout().shape();
         let new_tensor_shape = shape
@@ -259,7 +260,7 @@ impl UntypedReduceKernel {
             self.datatype,
         );
 
-        self.run_with_query_and_out_tensor(tensor, dim, query, &output_tensor);
+        self.run_with_query_and_out_tensor(tensor, dim, query, &output_tensor, command_encoder);
 
         output_tensor
     }
@@ -270,6 +271,7 @@ impl UntypedReduceKernel {
         dim: usize,
         query: Option<&PerformanceQueries>,
         output_tensor: &TensorData,
+        command_encoder: &mut CommandEncoder,
     ) {
         assert_eq!(
             *output_tensor.layout().shape(),
@@ -434,12 +436,8 @@ impl UntypedReduceKernel {
                     ],
                 });
 
-        let mut encoder = tensor
-            .device()
-            .wgpu_device()
-            .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
             });
@@ -449,9 +447,8 @@ impl UntypedReduceKernel {
             cpass.dispatch_workgroups(workgroup_size, 1, 1)
         }
         if let Some(query) = query {
-            query.resolve(&mut encoder);
+            query.resolve(command_encoder);
         }
-        tensor.device().wgpu_queue().submit(Some(encoder.finish()));
     }
 }
 

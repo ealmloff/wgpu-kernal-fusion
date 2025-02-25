@@ -1,6 +1,6 @@
 use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 
-use wgpu::{PipelineCompilationOptions, util::DeviceExt};
+use wgpu::{util::DeviceExt, CommandEncoder, PipelineCompilationOptions};
 
 use crate::{
     Tensor,
@@ -196,7 +196,7 @@ impl UntypedElementWiseKernel {
         kernel
     }
 
-    pub fn run_with_query(&self, tensor: &TensorData, query: Option<&PerformanceQueries>) {
+    pub fn run_with_query(&self, tensor: &TensorData, query: Option<&PerformanceQueries>, command_encoder: &mut CommandEncoder) {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
         let layout = TensorLayout::from(tensor.layout());
@@ -294,12 +294,8 @@ impl UntypedElementWiseKernel {
                     ],
                 });
 
-        let mut encoder = tensor
-            .device()
-            .wgpu_device()
-            .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
             });
@@ -335,9 +331,8 @@ impl UntypedElementWiseKernel {
             cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
         }
         if let Some(query) = query {
-            query.resolve(&mut encoder);
+            query.resolve(command_encoder);
         }
-        tensor.device().wgpu_queue().submit(Some(encoder.finish()));
     }
 }
 
@@ -393,7 +388,7 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new(format!("data = data + {};", value))
-                .with_name("add"),
+                .with_name("add_const"),
         })
     }
 }
@@ -582,7 +577,7 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new(format!("data = data - {};", value))
-                .with_name("subtract"),
+                .with_name("subtract_const"),
         })
     }
 }
@@ -617,7 +612,7 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new(format!("data = data * {};", value))
-                .with_name("multiply"),
+                .with_name("multiply_const"),
         })
     }
 }
@@ -652,7 +647,7 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new(format!("data = data / {};", value))
-                .with_name("divide"),
+                .with_name("divide_const"),
         })
     }
 }

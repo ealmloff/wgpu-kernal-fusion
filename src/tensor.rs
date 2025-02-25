@@ -9,7 +9,10 @@ use bytemuck::{AnyBitPattern, NoUninit};
 use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
 use crate::{
-    compute_graph::{AnyComputeKey, ComputeGraph}, layout::Layout, Device, ElementWiseFunction, ElementWiseOperation, MatMulOperation, PairWiseFunction, PairWiseOperation, ReduceFunction, ReduceOperation, UntypedMatMul
+    Device, ElementWiseFunction, ElementWiseOperation, MatMulOperation, PairWiseFunction,
+    PairWiseOperation, ReduceFunction, ReduceOperation, UntypedMatMul,
+    compute_graph::{AnyComputeKey, ComputeGraph},
+    layout::Layout,
 };
 
 pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
@@ -140,6 +143,10 @@ impl LazyTensorData {
 
     pub(crate) fn key(&self) -> AnyComputeKey {
         self.key
+    }
+
+    pub(crate) fn materialize(&self) -> TensorData {
+        self.graph.resolve(self.key, &self.device)
     }
 }
 
@@ -349,20 +356,22 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         }
     }
 
-    // pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
-    //     let (sender, receiver) = futures_channel::oneshot::channel();
-    //     DownloadBuffer::read_buffer(
-    //         self.data.device.wgpu_device(),
-    //         self.data.device.wgpu_queue(),
-    //         &self.data.buffer.slice(..),
-    //         move |result| {
-    //             _ = sender.send(result);
-    //         },
-    //     );
-    //     let downloaded = receiver.await.map_err(|_| wgpu::BufferAsyncError)??;
+    pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
+        let tensor = self.data.materialize();
+        let buffer = tensor.buffer();
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        DownloadBuffer::read_buffer(
+            self.data.device.wgpu_device(),
+            self.data.device.wgpu_queue(),
+            &buffer.slice(..),
+            move |result| {
+                _ = sender.send(result);
+            },
+        );
+        let downloaded = receiver.await.map_err(|_| wgpu::BufferAsyncError)??;
 
-    //     Ok(TensorSlice::new(downloaded, self.layout().clone()))
-    // }
+        Ok(TensorSlice::new(downloaded, self.layout().clone()))
+    }
 
     // pub fn slice(&self, ranges: [Range<usize>; R]) -> Self {
     //     Self {
@@ -399,7 +408,9 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
 
     pub(crate) fn reduce(&self, function: ReduceFunction) -> Self {
         Self {
-            data: self.data.reduce(ReduceOperation::new(self.data.key, function)),
+            data: self
+                .data
+                .reduce(ReduceOperation::new(self.data.key, function)),
             datatype: PhantomData,
         }
     }

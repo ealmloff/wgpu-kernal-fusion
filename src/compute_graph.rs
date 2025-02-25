@@ -4,15 +4,15 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use wgpu::wgc::identity;
+use wgpu::CommandEncoder;
 
 use crate::{
-    ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
+    Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
     UntypedElementWiseKernel, UntypedPairWiseKernel, UntypedReduceKernel, matmul::UntypedMatMul,
     tensor::TensorData,
 };
-use tabbycat::{AttrList, Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList, SubGraph};
-use tabbycat::{Graph, attributes::*};
+use tabbycat::Graph;
+use tabbycat::{Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ElementWiseComputeNodeKey(usize);
@@ -159,6 +159,15 @@ impl ComputeGraph {
         self.with_mut(|inner| inner.tensor.insert(id, info));
         id
     }
+
+    pub(crate) fn resolve(&self, key: AnyComputeKey, device: &Device) -> TensorData {
+        let mut encoder = device
+            .wgpu_device()
+            .create_command_encoder(&Default::default());
+        let data = self.with_mut(|inner| inner.resolve(key, &mut encoder));
+        device.wgpu_queue().submit(Some(encoder.finish()));
+        data
+    }
 }
 
 #[derive(Default)]
@@ -171,66 +180,86 @@ struct ComputeGraphInner {
 }
 
 impl ComputeGraphInner {
-    pub(crate) fn resolve(&self, key: AnyComputeKey) -> TensorData {
+    pub(crate) fn resolve(
+        &self,
+        key: AnyComputeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
+        let graph = self.graphvis(key);
+        println!("{graph}");
         match key {
             AnyComputeKey::ElementWiseComputeNodeKey(element_wise_compute_node_key) => {
-                self.resolve_element_wise(element_wise_compute_node_key)
+                self.resolve_element_wise(element_wise_compute_node_key, command_encoder)
             }
             AnyComputeKey::PairWiseComputeNodeKey(pair_wise_compute_node_key) => {
-                self.resolve_pair_wise(pair_wise_compute_node_key)
+                self.resolve_pair_wise(pair_wise_compute_node_key, command_encoder)
             }
             AnyComputeKey::MatMulComputeNodeKey(mat_mul_compute_node_key) => {
-                self.resolve_mat_mul(mat_mul_compute_node_key)
+                self.resolve_mat_mul(mat_mul_compute_node_key, command_encoder)
             }
             AnyComputeKey::ReduceComputeNodeKey(reduce_compute_node_key) => {
-                self.resolve_reduce(reduce_compute_node_key)
+                self.resolve_reduce(reduce_compute_node_key, command_encoder)
             }
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
-                self.resolve_tensor(tensor_compute_node_key)
+                self.resolve_tensor(tensor_compute_node_key, command_encoder)
             }
         }
     }
 
-    fn resolve_element_wise(&self, key: ElementWiseComputeNodeKey) -> TensorData {
+    fn resolve_element_wise(
+        &self,
+        key: ElementWiseComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
         let operation = self.element_wise.get(&key).unwrap();
 
-        let input = self.resolve(operation.value);
+        let input = self.resolve(operation.value, &mut *command_encoder);
         let kernel =
             UntypedElementWiseKernel::new(vec![operation.function.clone()], input.datatype());
-        kernel.run_with_query(&input, None);
+        kernel.run_with_query(&input, None, command_encoder);
         input
     }
 
-    fn resolve_pair_wise(&self, key: PairWiseComputeNodeKey) -> TensorData {
+    fn resolve_pair_wise(
+        &self,
+        key: PairWiseComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
         let operation = self.pair_wise.get(&key).unwrap();
 
-        let first = self.resolve(operation.first);
-        let second = self.resolve(operation.second);
+        let first = self.resolve(operation.first, &mut *command_encoder);
+        let second = self.resolve(operation.second, &mut *command_encoder);
         let kernel = UntypedPairWiseKernel::new(operation.function.clone(), first.datatype());
-        kernel.run_with_query(&first, &second, None);
-        first
+        kernel.run_with_query(&first, &second, None, command_encoder);
+        second
     }
 
-    fn resolve_mat_mul(&self, key: MatMulComputeNodeKey) -> TensorData {
+    fn resolve_mat_mul(
+        &self,
+        key: MatMulComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
         let operation = self.mat_mul.get(&key).unwrap();
 
-        let first = self.resolve(operation.first);
-        let second = self.resolve(operation.second);
+        let first = self.resolve(operation.first, &mut *command_encoder);
+        let second = self.resolve(operation.second, &mut *command_encoder);
         let kernel = UntypedMatMul::new(first.datatype());
-        kernel.run_with_query(&first, &second, None);
-        first
+        kernel.run_with_query(&first, &second, None, command_encoder)
     }
 
-    fn resolve_reduce(&self, key: ReduceComputeNodeKey) -> TensorData {
+    fn resolve_reduce(
+        &self,
+        key: ReduceComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
         let operation = self.reduce.get(&key).unwrap();
 
-        let input = self.resolve(operation.value);
+        let input = self.resolve(operation.value, &mut *command_encoder);
         let kernel = UntypedReduceKernel::new(operation.function.clone(), input.datatype());
-        kernel.run_with_query(&input, 0, None);
-        input
+        kernel.run_with_query(&input, 0, None, command_encoder)
     }
 
-    fn resolve_tensor(&self, key: TensorComputeNodeKey) -> TensorData {
+    fn resolve_tensor(&self, key: TensorComputeNodeKey, _: &mut CommandEncoder) -> TensorData {
         self.tensor.get(&key).unwrap().clone()
     }
 
@@ -240,6 +269,7 @@ impl ComputeGraphInner {
         GraphBuilder::default()
             .graph_type(GraphType::DiGraph)
             .strict(false)
+            .id(Identity::id("ComputeGraph").unwrap())
             .stmts(StmtList::new().extend(statements))
             .build()
             .unwrap()
@@ -279,7 +309,7 @@ impl ComputeGraphInner {
             attr: None,
         });
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(input, None),
+            Edge::head_node(input, None).arrow_to_node(id.clone(), None),
         ));
         id
     }
@@ -299,10 +329,10 @@ impl ComputeGraphInner {
             attr: None,
         });
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(first, None),
+            Edge::head_node(first, None).arrow_to_node(id.clone(), None),
         ));
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(second, None),
+            Edge::head_node(second, None).arrow_to_node(id.clone(), None),
         ));
         id
     }
@@ -318,10 +348,10 @@ impl ComputeGraphInner {
             attr: None,
         });
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(first, None),
+            Edge::head_node(first, None).arrow_to_node(id.clone(), None),
         ));
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(second, None),
+            Edge::head_node(second, None).arrow_to_node(id.clone(), None),
         ));
         id
     }
@@ -348,9 +378,6 @@ impl ComputeGraphInner {
             port: None,
             attr: None,
         });
-        graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(id.clone(), None),
-        ));
         id
     }
 }

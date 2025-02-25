@@ -1,6 +1,6 @@
 use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 
-use wgpu::{PipelineCompilationOptions, util::DeviceExt};
+use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Tensor, UntypedElementWiseKernel,
@@ -10,7 +10,7 @@ use crate::{
     tensor::{DataType, DataTypeEnum, TensorData},
 };
 
-#[derive(Clone)]    
+#[derive(Clone)]
 pub(crate) struct PairWiseOperation {
     pub(crate) first: AnyComputeKey,
     pub(crate) second: AnyComputeKey,
@@ -230,6 +230,7 @@ impl UntypedPairWiseKernel {
         first: &TensorData,
         out: &TensorData,
         query: Option<&PerformanceQueries>,
+        command_encoder: &mut CommandEncoder,
     ) {
         assert_eq!(first.layout().shape(), out.layout().shape());
         let contiguous = first.layout().is_contiguous() && out.layout().is_contiguous();
@@ -368,11 +369,8 @@ impl UntypedPairWiseKernel {
                 ],
             });
 
-        let mut encoder = device
-            .wgpu_device()
-            .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
             });
@@ -408,9 +406,8 @@ impl UntypedPairWiseKernel {
             cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
         }
         if let Some(query) = query {
-            query.resolve(&mut encoder);
+            query.resolve(command_encoder);
         }
-        device.wgpu_queue().submit(Some(encoder.finish()));
     }
 }
 
@@ -448,7 +445,9 @@ impl PairWiseFunction {
     }
 
     fn function(&self, dtype: DataTypeEnum) -> String {
-        let Self { name_id, operation } = self;
+        let Self {
+            name_id, operation, ..
+        } = self;
         format!(
             r#"fn binary_{name_id}(a: {dtype}, b: {dtype}) -> {dtype} {{
     var data: {dtype};
@@ -461,7 +460,10 @@ impl PairWiseFunction {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn add(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a + b;")).with_name("add"))
+        self.pair_wise(
+            other,
+            PairWiseFunction::new(format!("data = a + b;")).with_name("add"),
+        )
     }
 }
 
@@ -628,7 +630,10 @@ async fn test_pair_wise_add_sparse() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn sub(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a - b;")).with_name("sub"))
+        self.pair_wise(
+            other,
+            PairWiseFunction::new(format!("data = a - b;")).with_name("sub"),
+        )
     }
 }
 
@@ -663,7 +668,10 @@ async fn test_pair_wise_sub() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn mul(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a * b;")).with_name("mul"))
+        self.pair_wise(
+            other,
+            PairWiseFunction::new(format!("data = a * b;")).with_name("mul"),
+        )
     }
 }
 
@@ -698,7 +706,10 @@ async fn test_pair_wise_mul() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn div(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = a / b;")).with_name("div"))
+        self.pair_wise(
+            other,
+            PairWiseFunction::new(format!("data = a / b;")).with_name("div"),
+        )
     }
 }
 
@@ -733,7 +744,10 @@ async fn test_pair_wise_div() {
 
 impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn pow(&self, other: &Self) -> Self {
-        self.pair_wise(other, PairWiseFunction::new(format!("data = pow(a, b);")).with_name("pow"))
+        self.pair_wise(
+            other,
+            PairWiseFunction::new(format!("data = pow(a, b);")).with_name("pow"),
+        )
     }
 }
 

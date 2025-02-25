@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, sync::OnceLock};
 
-use wgpu::{PipelineCompilationOptions, util::DeviceExt};
+use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Device, PairWiseFunction, Tensor,
@@ -52,6 +52,7 @@ impl UntypedMatMul {
         a: &TensorData,
         b: &TensorData,
         query: Option<&PerformanceQueries>,
+        command_encoder: &mut CommandEncoder,
     ) -> TensorData {
         let device = a.device();
         let a_shape = a.layout().shape();
@@ -70,7 +71,7 @@ impl UntypedMatMul {
             &[a_shape[0], b_shape[1]],
             a.datatype(),
         );
-        self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor);
+        self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor, command_encoder);
         output_tensor
     }
 
@@ -81,6 +82,7 @@ impl UntypedMatMul {
         b: &TensorData,
         query: Option<&PerformanceQueries>,
         output_tensor: &TensorData,
+        command_encoder: &mut CommandEncoder,
     ) {
         assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
         let module = self.compile(device);
@@ -194,11 +196,8 @@ impl UntypedMatMul {
                 ],
             });
 
-        let mut encoder = device
-            .wgpu_device()
-            .create_command_encoder(&Default::default());
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
             });
@@ -211,9 +210,8 @@ impl UntypedMatMul {
             cpass.dispatch_workgroups(workgroup_size_a, workgroup_size_b, 1);
         }
         if let Some(query) = query {
-            query.resolve(&mut encoder);
+            query.resolve(command_encoder);
         }
-        device.wgpu_queue().submit(Some(encoder.finish()));
     }
 }
 
