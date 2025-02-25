@@ -3,18 +3,37 @@ use std::{marker::PhantomData, sync::OnceLock};
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    Device, Tensor,
+    Device, PairWiseFunction, Tensor,
+    compute_graph::AnyComputeKey,
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
 };
 
-struct UntypedMatMul {
+#[derive(Clone)]
+pub(crate) struct MatMulOperation {
+    pub(crate) first: AnyComputeKey,
+    pub(crate) second: AnyComputeKey,
+}
+
+impl MatMulOperation {
+    pub fn new(first: AnyComputeKey, second: AnyComputeKey) -> Self {
+        Self { first, second }
+    }
+}
+
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn mat_mul(&self, other: &Self) -> Self {
+        self.add_mat_mul(other)
+    }
+}
+
+pub(crate) struct UntypedMatMul {
     kernel: OnceLock<wgpu::ShaderModule>,
     datatype: DataTypeEnum,
 }
 
 impl UntypedMatMul {
-    const fn new(datatype: DataTypeEnum) -> Self {
+    pub(crate) const fn new(datatype: DataTypeEnum) -> Self {
         Self {
             kernel: OnceLock::new(),
             datatype,
@@ -28,13 +47,13 @@ impl UntypedMatMul {
         })
     }
 
-    pub async fn run_with_query(
+    pub fn run_with_query(
         &self,
-        device: &Device,
         a: &TensorData,
         b: &TensorData,
         query: Option<&PerformanceQueries>,
     ) -> TensorData {
+        let device = a.device();
         let a_shape = a.layout().shape();
         let b_shape = b.layout().shape();
         let output_buf = device.wgpu_device().create_buffer(&wgpu::BufferDescriptor {
@@ -51,12 +70,11 @@ impl UntypedMatMul {
             &[a_shape[0], b_shape[1]],
             a.datatype(),
         );
-        self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor)
-            .await;
+        self.run_with_query_and_out_tensor(device, a, b, query, &output_tensor);
         output_tensor
     }
 
-    pub async fn run_with_query_and_out_tensor(
+    pub fn run_with_query_and_out_tensor(
         &self,
         device: &Device,
         a: &TensorData,
@@ -196,59 +214,6 @@ impl UntypedMatMul {
             query.resolve(&mut encoder);
         }
         device.wgpu_queue().submit(Some(encoder.finish()));
-    }
-}
-
-pub struct MatMul<T> {
-    untyped: UntypedMatMul,
-    datatype: PhantomData<T>,
-}
-
-impl<T: DataType> Default for MatMul<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: DataType> MatMul<T> {
-    pub const fn new() -> Self {
-        Self {
-            untyped: UntypedMatMul::new(T::WGSL_TYPE),
-            datatype: PhantomData,
-        }
-    }
-
-    pub async fn run(&self, device: &Device, a: &Tensor<2, T>, b: &Tensor<2, T>) -> Tensor<2, T> {
-        self.untyped
-            .run_with_query(device, a.data(), b.data(), None)
-            .await
-            .into()
-    }
-
-    pub async fn run_with_query(
-        &self,
-        device: &Device,
-        a: &Tensor<2, T>,
-        b: &Tensor<2, T>,
-        query: Option<&PerformanceQueries>,
-    ) -> Tensor<2, T> {
-        self.untyped
-            .run_with_query(device, a.data(), b.data(), query)
-            .await
-            .into()
-    }
-
-    pub async fn run_with_query_and_out_tensor(
-        &self,
-        device: &Device,
-        a: &Tensor<2, T>,
-        b: &Tensor<2, T>,
-        query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<2, T>,
-    ) {
-        self.untyped
-            .run_with_query_and_out_tensor(device, a.data(), b.data(), query, output_tensor.data())
-            .await
     }
 }
 

@@ -1,13 +1,26 @@
-use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
+use std::{fmt::Display, sync::OnceLock};
 
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    Tensor, UntypedElementWiseOperation,
+    Tensor, UntypedElementWiseKernel,
+    compute_graph::AnyComputeKey,
     layout::Layout,
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
 };
+
+#[derive(Clone)]
+pub(crate) struct ReduceOperation {
+    pub(crate) value: AnyComputeKey,
+    pub(crate) function: ReduceFunction,
+}
+
+impl ReduceOperation {
+    pub fn new(value: AnyComputeKey, function: ReduceFunction) -> Self {
+        Self { value, function }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ReduceTensorLayout {
@@ -52,60 +65,20 @@ impl ReduceTensorLayout {
     }
 }
 
-pub struct ReduceOperation<T> {
-    untyped: UntypedReduceOperation,
-    datatype: PhantomData<T>,
-}
-
-impl<T: DataType> ReduceOperation<T> {
-    pub fn new(reduce: ReduceFunction) -> Self {
-        Self {
-            untyped: UntypedReduceOperation::new(reduce, T::WGSL_TYPE),
-            datatype: PhantomData,
-        }
-    }
-
-    pub fn run(&self, tensor: &Tensor<2, T>, dim: usize) -> Tensor<1, T> {
-        self.run_with_query(tensor, dim, None)
-    }
-
-    pub fn run_with_query(
-        &self,
-        tensor: &Tensor<2, T>,
-        dim: usize,
-        query: Option<&PerformanceQueries>,
-    ) -> Tensor<1, T> {
-        self.untyped
-            .run_with_query(tensor.data(), dim, query)
-            .into()
-    }
-
-    pub fn run_with_query_and_out_tensor(
-        &self,
-        tensor: &Tensor<2, T>,
-        dim: usize,
-        query: Option<&PerformanceQueries>,
-        output_tensor: &Tensor<1, T>,
-    ) {
-        self.untyped
-            .run_with_query_and_out_tensor(tensor.data(), dim, query, output_tensor.data())
-    }
-}
-
-pub(crate) struct UntypedReduceOperation {
-    pre_element_wise: UntypedElementWiseOperation,
+pub(crate) struct UntypedReduceKernel {
+    pre_element_wise: UntypedElementWiseKernel,
     reduce: ReduceFunction,
-    post_element_wise: UntypedElementWiseOperation,
+    post_element_wise: UntypedElementWiseKernel,
     kernel: OnceLock<wgpu::ShaderModule>,
     datatype: DataTypeEnum,
 }
 
-impl UntypedReduceOperation {
+impl UntypedReduceKernel {
     pub fn new(reduce: ReduceFunction, datatype: DataTypeEnum) -> Self {
         Self {
-            pre_element_wise: UntypedElementWiseOperation::empty(datatype),
+            pre_element_wise: UntypedElementWiseKernel::empty(datatype),
             reduce,
-            post_element_wise: UntypedElementWiseOperation::empty(datatype),
+            post_element_wise: UntypedElementWiseKernel::empty(datatype),
             kernel: OnceLock::new(),
             datatype,
         }
@@ -482,6 +455,7 @@ impl UntypedReduceOperation {
     }
 }
 
+#[derive(Clone)]
 pub struct ReduceFunction {
     name_id: u64,
     operation: String,
@@ -519,8 +493,13 @@ impl ReduceFunction {
     }
 }
 
-pub fn sum() -> ReduceFunction {
-    ReduceFunction::new("merged = merged + data;".to_string(), "0.0")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn sum(&self) -> Self {
+        self.reduce(ReduceFunction::new(
+            "merged = merged + data;".to_string(),
+            "0.0",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -699,8 +678,13 @@ async fn test_reduce_const_sum_then_add_fused() {
     assert_eq!(output[[2]], 1. + 11.);
 }
 
-pub fn max() -> ReduceFunction {
-    ReduceFunction::new("merged = max(merged, data);".to_string(), "-3.40282e+38")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn max(&self) -> Self {
+        self.reduce(ReduceFunction::new(
+            "merged = max(merged, data);".to_string(),
+            "-3.40282e+38",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -736,8 +720,13 @@ async fn test_reduce_max() {
     assert_eq!(output[[2]], 6.);
 }
 
-pub fn min() -> ReduceFunction {
-    ReduceFunction::new("merged = min(merged, data);".to_string(), "3.40282e+38")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn min(&self) -> Self {
+        self.reduce(ReduceFunction::new(
+            "merged = min(merged, data);".to_string(),
+            "3.40282e+38",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -773,8 +762,13 @@ async fn test_reduce_min() {
     assert_eq!(output[[2]], 5.);
 }
 
-pub fn product() -> ReduceFunction {
-    ReduceFunction::new("merged = merged * data;".to_string(), "1.0")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn product(&self) -> Self {
+        self.reduce(ReduceFunction::new(
+            "merged = merged * data;".to_string(),
+            "1.0",
+        ))
+    }
 }
 
 #[cfg(test)]

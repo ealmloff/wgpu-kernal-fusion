@@ -3,57 +3,48 @@ use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
 use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
-    Tensor, UntypedElementWiseOperation,
+    Tensor, UntypedElementWiseKernel,
+    compute_graph::AnyComputeKey,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData},
 };
 
-pub struct PairWiseOperation<T> {
-    untyped: UntypedPairWiseOperation,
-    datatype: PhantomData<T>,
+#[derive(Clone)]    
+pub(crate) struct PairWiseOperation {
+    pub(crate) first: AnyComputeKey,
+    pub(crate) second: AnyComputeKey,
+    pub(crate) function: PairWiseFunction,
 }
 
-impl<T: DataType> PairWiseOperation<T> {
-    pub fn new(function: PairWiseFunction) -> Self {
+impl PairWiseOperation {
+    pub fn new(function: PairWiseFunction, first: AnyComputeKey, second: AnyComputeKey) -> Self {
         Self {
-            untyped: UntypedPairWiseOperation::new(function, T::WGSL_TYPE),
-            datatype: PhantomData,
+            function,
+            first,
+            second,
         }
     }
-
-    pub fn run<const R: usize>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
-        self.run_with_query(first, out, None);
-    }
-
-    pub fn run_with_query<const R: usize>(
-        &self,
-        first: &Tensor<R, T>,
-        out: &Tensor<R, T>,
-        query: Option<&PerformanceQueries>,
-    ) {
-        self.untyped.run_with_query(first.data(), out.data(), query);
-    }
 }
 
-pub(crate) struct UntypedPairWiseOperation {
-    pre_element_wise: [UntypedElementWiseOperation; 2],
+pub(crate) struct UntypedPairWiseKernel {
+    pre_element_wise: [UntypedElementWiseKernel; 2],
     function: PairWiseFunction,
-    post_element_wise: UntypedElementWiseOperation,
+    post_element_wise: UntypedElementWiseKernel,
     dense_kernel: OnceLock<wgpu::ShaderModule>,
     sparse_kernel: OnceLock<wgpu::ShaderModule>,
     datatype: DataTypeEnum,
 }
 
-impl UntypedPairWiseOperation {
+impl UntypedPairWiseKernel {
     pub fn new(function: PairWiseFunction, datatype: DataTypeEnum) -> Self {
         Self {
             pre_element_wise: [
-                UntypedElementWiseOperation::empty(datatype),
-                UntypedElementWiseOperation::empty(datatype),
+                UntypedElementWiseKernel::empty(datatype),
+                UntypedElementWiseKernel::empty(datatype),
             ],
             function,
-            post_element_wise: UntypedElementWiseOperation::empty(datatype),
+            post_element_wise: UntypedElementWiseKernel::empty(datatype),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
             datatype,
@@ -455,23 +446,12 @@ impl PairWiseFunction {
 }}"#
         )
     }
-
-    pub fn run<const R: usize, T: DataType>(&self, first: &Tensor<R, T>, out: &Tensor<R, T>) {
-        self.run_with_query(first, out, None);
-    }
-
-    pub fn run_with_query<const R: usize, T: DataType>(
-        &self,
-        first: &Tensor<R, T>,
-        out: &Tensor<R, T>,
-        query: Option<&PerformanceQueries>,
-    ) {
-        PairWiseOperation::new(self.clone()).run_with_query(first, out, query);
-    }
 }
 
-pub fn add() -> PairWiseFunction {
-    PairWiseFunction::new(format!("data = a + b;"))
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn add(&self, other: &Self) -> Self {
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a + b;")))
+    }
 }
 
 #[cfg(test)]
@@ -635,8 +615,10 @@ async fn test_pair_wise_add_sparse() {
     assert_eq!(as_slice[[2, 0]], 5. + 5.);
 }
 
-pub fn sub() -> PairWiseFunction {
-    PairWiseFunction::new(format!("data = a - b;"))
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn sub(&self, other: &Self) -> Self {
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a - b;")))
+    }
 }
 
 #[cfg(test)]
@@ -668,8 +650,10 @@ async fn test_pair_wise_sub() {
     assert_eq!(as_slice[[2, 1]], 6. - 6.);
 }
 
-pub fn mul() -> PairWiseFunction {
-    PairWiseFunction::new(format!("data = a * b;").to_string())
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn mul(&self, other: &Self) -> Self {
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a * b;")))
+    }
 }
 
 #[cfg(test)]
@@ -701,8 +685,10 @@ async fn test_pair_wise_mul() {
     assert_eq!(as_slice[[2, 1]], 6. * 6.);
 }
 
-pub fn div() -> PairWiseFunction {
-    PairWiseFunction::new(format!("data = a / b;").to_string())
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn div(&self, other: &Self) -> Self {
+        self.pair_wise(other, PairWiseFunction::new(format!("data = a / b;")))
+    }
 }
 
 #[cfg(test)]
@@ -734,8 +720,10 @@ async fn test_pair_wise_div() {
     assert_eq!(as_slice[[2, 1]], 6. / 6.);
 }
 
-pub fn pow() -> PairWiseFunction {
-    PairWiseFunction::new(format!("data = pow(a, b);").to_string())
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn pow(&self, other: &Self) -> Self {
+        self.pair_wise(other, PairWiseFunction::new(format!("data = pow(a, b);")))
+    }
 }
 
 #[cfg(test)]

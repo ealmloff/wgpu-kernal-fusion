@@ -4,6 +4,7 @@ use wgpu::{PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Tensor,
+    compute_graph::AnyComputeKey,
     layout::{TILE_SIZE, TensorLayout},
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData},
@@ -12,45 +13,29 @@ use crate::{
 #[cfg(test)]
 use crate::Device;
 
-pub struct ElementWiseOperation<T> {
-    pub(crate) untyped: UntypedElementWiseOperation,
-    datatype: PhantomData<T>,
+#[derive(Clone)]
+pub(crate) struct ElementWiseOperation {
+    pub(crate) value: AnyComputeKey,
+    pub(crate) function: ElementWiseFunction,
 }
 
-impl<T: DataType> ElementWiseOperation<T> {
-    pub fn new(functions: impl IntoIterator<Item = ElementWiseFunction>) -> Self {
-        Self {
-            untyped: UntypedElementWiseOperation {
-                functions: functions.into_iter().collect(),
-                dense_kernel: OnceLock::new(),
-                sparse_kernel: OnceLock::new(),
-                datatype: T::WGSL_TYPE,
-            },
-            datatype: PhantomData,
-        }
-    }
-
-    pub fn run<const R: usize>(&self, tensor: &Tensor<R, T>) {
-        self.untyped.run_with_query(tensor.data(), None);
-    }
-
-    pub fn run_with_query<const R: usize>(
-        &self,
-        tensor: &Tensor<R, T>,
-        query: Option<&PerformanceQueries>,
-    ) {
-        self.untyped.run_with_query(tensor.data(), query);
-    }
-}
-
-pub(crate) struct UntypedElementWiseOperation {
+pub(crate) struct UntypedElementWiseKernel {
     functions: Vec<ElementWiseFunction>,
     dense_kernel: OnceLock<wgpu::ShaderModule>,
     sparse_kernel: OnceLock<wgpu::ShaderModule>,
     datatype: DataTypeEnum,
 }
 
-impl UntypedElementWiseOperation {
+impl UntypedElementWiseKernel {
+    pub fn new(functions: Vec<ElementWiseFunction>, datatype: DataTypeEnum) -> Self {
+        Self {
+            functions,
+            dense_kernel: OnceLock::new(),
+            sparse_kernel: OnceLock::new(),
+            datatype,
+        }
+    }
+
     pub fn empty(datatype: DataTypeEnum) -> Self {
         Self {
             functions: Vec::new(),
@@ -397,22 +382,16 @@ impl ElementWiseFunction {
 }}"#
         )
     }
-
-    pub fn run<const R: usize, T: DataType>(&self, tensor: &Tensor<R, T>) {
-        self.run_with_query(tensor, None)
-    }
-
-    pub fn run_with_query<const R: usize, T: DataType>(
-        &self,
-        tensor: &Tensor<R, T>,
-        query: Option<&PerformanceQueries>,
-    ) {
-        ElementWiseOperation::new([self.clone()]).run_with_query(tensor, query)
-    }
 }
 
-pub fn add_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data + {};", value)).with_name("add")
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn add_const(&self, value: f32) -> Tensor<R, T> {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new(format!("data = data + {};", value))
+                .with_name("add"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -594,8 +573,14 @@ async fn test_merge_add_const() {
     assert_eq!(output[[2, 1]], 14.);
 }
 
-pub fn sub_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data - {};", value)).with_name("subtract")
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn sub_const(&self, value: f32) -> Tensor<R, T> {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new(format!("data = data - {};", value))
+                .with_name("subtract"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -623,8 +608,14 @@ async fn test_sub_const() {
     assert_eq!(output[[2, 1]], 5.);
 }
 
-pub fn mul_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data * {};", value)).with_name("multiply")
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn mul_const(&self, value: f32) -> Tensor<R, T> {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new(format!("data = data * {};", value))
+                .with_name("multiply"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -652,8 +643,14 @@ async fn test_mul_const() {
     assert_eq!(output[[2, 1]], 12.);
 }
 
-pub fn div_const(value: f32) -> ElementWiseFunction {
-    ElementWiseFunction::new(format!("data = data / {};", value)).with_name("divide")
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn div_const(&self, value: f32) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new(format!("data = data / {};", value))
+                .with_name("divide"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -681,8 +678,13 @@ async fn test_div_const() {
     assert_eq!(output[[2, 1]], 3.);
 }
 
-pub fn exp() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = exp(data);").with_name("exp")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn exp(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = exp(data);").with_name("exp"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -710,8 +712,13 @@ async fn test_exp() {
     assert!((output[[2, 1]] - data[2][1].exp()).abs() < 0.001);
 }
 
-pub fn exp2() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = exp2(data);").with_name("exp2")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn exp2(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = exp2(data);").with_name("exp2"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -739,8 +746,13 @@ async fn test_exp2() {
     assert!((output[[2, 1]] - data[2][1].exp2()).abs() < 0.001);
 }
 
-pub fn log() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = log(data);").with_name("log")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn log(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = log(data);").with_name("log"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -768,8 +780,13 @@ async fn test_log() {
     assert!((output[[2, 1]] - data[2][1].ln()).abs() < 0.001);
 }
 
-pub fn log2() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = log2(data);").with_name("log2")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn log2(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = log2(data);").with_name("log2"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -797,8 +814,13 @@ async fn test_log2() {
     assert!((output[[2, 1]] - data[2][1].log2()).abs() < 0.001);
 }
 
-pub fn sqrt() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sqrt(data);").with_name("sqrt")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn sqrt(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = sqrt(data);").with_name("sqrt"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -826,8 +848,13 @@ async fn test_sqrt() {
     assert!((output[[2, 1]] - data[2][1].sqrt()).abs() < 0.001);
 }
 
-pub fn sin() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sin(data);").with_name("sin")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn sin(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = sin(data);").with_name("sin"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -855,8 +882,13 @@ async fn test_sin() {
     assert!((output[[2, 1]] - data[2][1].sin()).abs() < 0.001);
 }
 
-pub fn cos() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = cos(data);").with_name("cos")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn cos(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = cos(data);").with_name("cos"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -884,8 +916,13 @@ async fn test_cos() {
     assert!((output[[2, 1]] - data[2][1].cos()).abs() < 0.001);
 }
 
-pub fn tan() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = tan(data);").with_name("tan")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn tan(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = tan(data);").with_name("tan"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -913,8 +950,13 @@ async fn test_tan() {
     assert!((output[[2, 1]] - data[2][1].tan()).abs() < 0.001);
 }
 
-pub fn asin() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = asin(data);").with_name("asin")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn asin(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = asin(data);").with_name("asin"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -946,8 +988,13 @@ async fn test_asin() {
     assert!((output[[2, 1]] - data[2][1].asin()).abs() < 0.001);
 }
 
-pub fn acos() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = acos(data);").with_name("acos")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn acos(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = acos(data);").with_name("acos"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -979,8 +1026,13 @@ async fn test_acos() {
     assert!((output[[2, 1]] - data[2][1].acos()).abs() < 0.001);
 }
 
-pub fn atan() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = atan(data);").with_name("atan")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn atan(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = atan(data);").with_name("atan"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1008,8 +1060,13 @@ async fn test_atan() {
     assert!((output[[2, 1]] - data[2][1].atan()).abs() < 0.001);
 }
 
-pub fn sinh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = sinh(data);").with_name("sinh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn sinh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = sinh(data);").with_name("sinh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1037,8 +1094,13 @@ async fn test_sinh() {
     assert!((output[[2, 1]] - data[2][1].sinh()).abs() < 0.001);
 }
 
-pub fn cosh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = cosh(data);").with_name("cosh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn cosh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = cosh(data);").with_name("cosh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1066,8 +1128,13 @@ async fn test_cosh() {
     assert!((output[[2, 1]] - data[2][1].cosh()).abs() < 0.001);
 }
 
-pub fn tanh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = tanh(data);").with_name("tanh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn tanh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = tanh(data);").with_name("tanh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1095,8 +1162,13 @@ async fn test_tanh() {
     assert!((output[[2, 1]] - data[2][1].tanh()).abs() < 0.001);
 }
 
-pub fn asinh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = asinh(data);").with_name("asinh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn asinh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = asinh(data);").with_name("asinh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1128,8 +1200,13 @@ async fn test_asinh() {
     assert!((output[[2, 1]] - data[2][1].asinh()).abs() < 0.001);
 }
 
-pub fn acosh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = acosh(data);").with_name("acosh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn acosh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = acosh(data);").with_name("acosh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1161,8 +1238,13 @@ async fn test_acosh() {
     assert!((output[[2, 1]] - data[2][1].acosh()).abs() < 0.001);
 }
 
-pub fn atanh() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = atanh(data);").with_name("atanh")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn atanh(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = atanh(data);").with_name("atanh"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1194,8 +1276,13 @@ async fn test_atanh() {
     assert!((output[[2, 1]] - data[2][1].atanh()).abs() < 0.001);
 }
 
-pub fn abs() -> ElementWiseFunction {
-    ElementWiseFunction::new("data = abs(data);").with_name("abs")
+impl<const R: usize, D: DataType> Tensor<R, D> {
+    pub fn abs(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("data = abs(data);").with_name("abs"),
+        })
+    }
 }
 
 #[cfg(test)]

@@ -8,7 +8,9 @@ use std::{
 use bytemuck::{AnyBitPattern, NoUninit};
 use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
-use crate::{Device, layout::Layout};
+use crate::{
+    compute_graph::{AnyComputeKey, ComputeGraph}, layout::Layout, Device, ElementWiseFunction, ElementWiseOperation, MatMulOperation, PairWiseFunction, PairWiseOperation, ReduceFunction, ReduceOperation, UntypedMatMul
+};
 
 pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
     const WGSL_TYPE: DataTypeEnum;
@@ -52,11 +54,100 @@ impl Display for DataTypeEnum {
 }
 
 #[derive(Clone)]
+pub(crate) struct TensorInfo {
+    layout: Layout,
+    datatype: DataTypeEnum,
+}
+
+#[derive(Clone)]
+pub(crate) struct LazyTensorData {
+    device: Device,
+    info: TensorInfo,
+    graph: ComputeGraph,
+    key: AnyComputeKey,
+}
+
+impl LazyTensorData {
+    pub(crate) fn new(data: TensorData) -> Self {
+        let graph = ComputeGraph::new();
+        let device = data.device.clone();
+        let info = data.info.clone();
+        let key = graph.create_tensor(data);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn element_wise(&self, function: ElementWiseOperation) -> Self {
+        let graph = self.graph.clone();
+        let device = self.device.clone();
+        let info = self.info.clone();
+        let key = graph.create_element_wise(function);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn pair_wise(&self, function: PairWiseOperation) -> Self {
+        let graph = self.graph.clone();
+        let device = self.device.clone();
+        let info = self.info.clone();
+        let key = graph.create_pair_wise(function);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn mat_mul(&self, function: MatMulOperation) -> Self {
+        let graph = self.graph.clone();
+        let device = self.device.clone();
+        let info = self.info.clone();
+        let key = graph.create_mat_mul(function);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn reduce(&self, function: ReduceOperation) -> Self {
+        let graph = self.graph.clone();
+        let device = self.device.clone();
+        let info = self.info.clone();
+        let key = graph.create_reduce(function);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn key(&self) -> AnyComputeKey {
+        self.key
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct TensorData {
     device: Device,
     buffer: Arc<wgpu::Buffer>,
-    layout: Layout,
-    datatype: DataTypeEnum,
+    info: TensorInfo,
 }
 
 impl TensorData {
@@ -69,8 +160,10 @@ impl TensorData {
         Self {
             device: device.clone(),
             buffer: Arc::new(buffer),
-            layout: Layout::contiguous(size),
-            datatype,
+            info: TensorInfo {
+                layout: Layout::contiguous(size),
+                datatype,
+            },
         }
     }
 
@@ -113,21 +206,23 @@ impl TensorData {
     }
 
     pub fn slice(&self, ranges: &[Range<usize>]) -> Self {
-        let layout = self.layout.slice(ranges);
+        let layout = self.info.layout.slice(ranges);
         Self {
             device: self.device.clone(),
             buffer: self.buffer.clone(),
-            layout,
-            datatype: self.datatype,
+            info: TensorInfo {
+                layout,
+                datatype: self.info.datatype,
+            },
         }
     }
 
     pub(crate) fn layout(&self) -> &Layout {
-        &self.layout
+        &self.info.layout
     }
 
     pub(crate) fn datatype(&self) -> DataTypeEnum {
-        self.datatype
+        self.info.datatype
     }
 
     pub fn device(&self) -> &Device {
@@ -140,14 +235,14 @@ impl TensorData {
 }
 
 pub struct Tensor<const R: usize, D> {
-    data: TensorData,
+    data: LazyTensorData,
     datatype: PhantomData<D>,
 }
 
 impl<const R: usize, D: DataType> From<TensorData> for Tensor<R, D> {
     fn from(value: TensorData) -> Self {
         Self {
-            data: value,
+            data: LazyTensorData::new(value),
             datatype: PhantomData,
         }
     }
@@ -249,43 +344,76 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         shape: [usize; R],
     ) -> Self {
         Self {
-            data: TensorData::new_inner(device, data, &shape),
+            data: LazyTensorData::new(TensorData::new_inner(device, data, &shape)),
             datatype: PhantomData,
         }
     }
 
-    pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        DownloadBuffer::read_buffer(
-            self.data.device.wgpu_device(),
-            self.data.device.wgpu_queue(),
-            &self.data.buffer.slice(..),
-            move |result| {
-                _ = sender.send(result);
-            },
-        );
-        let downloaded = receiver.await.map_err(|_| wgpu::BufferAsyncError)??;
+    // pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
+    //     let (sender, receiver) = futures_channel::oneshot::channel();
+    //     DownloadBuffer::read_buffer(
+    //         self.data.device.wgpu_device(),
+    //         self.data.device.wgpu_queue(),
+    //         &self.data.buffer.slice(..),
+    //         move |result| {
+    //             _ = sender.send(result);
+    //         },
+    //     );
+    //     let downloaded = receiver.await.map_err(|_| wgpu::BufferAsyncError)??;
 
-        Ok(TensorSlice::new(downloaded, self.layout().clone()))
-    }
+    //     Ok(TensorSlice::new(downloaded, self.layout().clone()))
+    // }
 
-    pub fn slice(&self, ranges: [Range<usize>; R]) -> Self {
+    // pub fn slice(&self, ranges: [Range<usize>; R]) -> Self {
+    //     Self {
+    //         data: self.data.slice(&ranges),
+    //         datatype: PhantomData,
+    //     }
+    // }
+
+    pub(crate) fn element_wise(&self, function: ElementWiseOperation) -> Self {
         Self {
-            data: self.data.slice(&ranges),
+            data: self.data.element_wise(function),
             datatype: PhantomData,
         }
     }
 
-    pub(crate) fn layout(&self) -> &Layout {
-        self.data.layout()
+    pub(crate) fn pair_wise(&self, other: &Self, function: PairWiseFunction) -> Self {
+        self.data.graph.merge(&other.data.graph);
+        let operation = PairWiseOperation::new(function, self.data.key, other.data.key);
+        Self {
+            data: self.data.pair_wise(operation),
+            datatype: PhantomData,
+        }
     }
 
-    pub(crate) fn data(&self) -> &TensorData {
+    pub(crate) fn add_mat_mul(&self, other: &Self) -> Self {
+        self.data.graph.merge(&other.data.graph);
+        let operation = MatMulOperation::new(self.data.key, other.data.key);
+
+        Self {
+            data: self.data.mat_mul(operation),
+            datatype: PhantomData,
+        }
+    }
+
+    pub(crate) fn reduce(&self, function: ReduceFunction) -> Self {
+        Self {
+            data: self.data.reduce(ReduceOperation::new(self.data.key, function)),
+            datatype: PhantomData,
+        }
+    }
+
+    pub(crate) fn data(&self) -> &LazyTensorData {
         &self.data
     }
 
-    pub fn device(&self) -> &Device {
-        self.data.device()
+    pub(crate) fn key(&self) -> AnyComputeKey {
+        self.data.key
+    }
+
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.data.info.layout
     }
 }
 

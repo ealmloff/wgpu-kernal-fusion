@@ -1,11 +1,12 @@
-pub use device::Device;
-pub use element_wise::*;
+pub use device::*;
 pub use layout::*;
-pub use matmul::MatMul;
-pub use pair_wise::*;
 pub use query::*;
-pub use reduce::*;
-pub use tensor::Tensor;
+pub use tensor::*;
+
+pub(crate) use element_wise::*;
+pub(crate) use matmul::*;
+pub(crate) use pair_wise::*;
+pub(crate) use reduce::*;
 
 mod compute_graph;
 mod device;
