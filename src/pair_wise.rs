@@ -1,4 +1,9 @@
-use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
+use std::{
+    fmt::Display,
+    marker::PhantomData,
+    ops::{Add, Div, Mul, Sub},
+    sync::OnceLock,
+};
 
 use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
@@ -458,10 +463,12 @@ impl PairWiseFunction {
     }
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn add(&self, other: &Self) -> Self {
+impl<const R: usize, T: DataType> Add<&Tensor<R, T>> for &Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn add(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
-            other,
+            rhs,
             PairWiseFunction::new(format!("data = a + b;")).with_name("add"),
         )
     }
@@ -628,10 +635,12 @@ async fn test_pair_wise_add_sparse() {
     assert_eq!(as_slice[[2, 0]], 5. + 5.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn sub(&self, other: &Self) -> Self {
+impl<const R: usize, T: DataType> Sub<&Tensor<R, T>> for &Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn sub(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
-            other,
+            rhs,
             PairWiseFunction::new(format!("data = a - b;")).with_name("sub"),
         )
     }
@@ -666,10 +675,12 @@ async fn test_pair_wise_sub() {
     assert_eq!(as_slice[[2, 1]], 6. - 6.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn mul(&self, other: &Self) -> Self {
+impl<const R: usize, T: DataType> Mul<&Tensor<R, T>> for &Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn mul(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
-            other,
+            rhs,
             PairWiseFunction::new(format!("data = a * b;")).with_name("mul"),
         )
     }
@@ -704,10 +715,12 @@ async fn test_pair_wise_mul() {
     assert_eq!(as_slice[[2, 1]], 6. * 6.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn div(&self, other: &Self) -> Self {
+impl<const R: usize, T: DataType> Div<&Tensor<R, T>> for &Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn div(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
-            other,
+            rhs,
             PairWiseFunction::new(format!("data = a / b;")).with_name("div"),
         )
     }

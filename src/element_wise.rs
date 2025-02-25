@@ -1,6 +1,11 @@
-use std::{fmt::Display, marker::PhantomData, sync::OnceLock};
+use std::{
+    fmt::Display,
+    marker::PhantomData,
+    ops::{Add, Div, Mul, Sub},
+    sync::OnceLock,
+};
 
-use wgpu::{util::DeviceExt, CommandEncoder, PipelineCompilationOptions};
+use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Tensor,
@@ -196,7 +201,12 @@ impl UntypedElementWiseKernel {
         kernel
     }
 
-    pub fn run_with_query(&self, tensor: &TensorData, query: Option<&PerformanceQueries>, command_encoder: &mut CommandEncoder) {
+    pub fn run_with_query(
+        &self,
+        tensor: &TensorData,
+        query: Option<&PerformanceQueries>,
+        command_encoder: &mut CommandEncoder,
+    ) {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
         let layout = TensorLayout::from(tensor.layout());
@@ -383,11 +393,13 @@ impl ElementWiseFunction {
     }
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn add_const(&self, value: f32) -> Tensor<R, T> {
+impl<const R: usize, T: DataType> Add<f32> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn add(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data + {};", value))
+            function: ElementWiseFunction::new(format!("data = data + {};", rhs))
                 .with_name("add_const"),
         })
     }
@@ -572,11 +584,13 @@ async fn test_merge_add_const() {
     assert_eq!(output[[2, 1]], 14.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn sub_const(&self, value: f32) -> Tensor<R, T> {
+impl<const R: usize, T: DataType> Sub<f32> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn sub(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data - {};", value))
+            function: ElementWiseFunction::new(format!("data = data - {};", rhs))
                 .with_name("subtract_const"),
         })
     }
@@ -607,11 +621,13 @@ async fn test_sub_const() {
     assert_eq!(output[[2, 1]], 5.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn mul_const(&self, value: f32) -> Tensor<R, T> {
+impl<const R: usize, T: DataType> Mul<f32> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn mul(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data * {};", value))
+            function: ElementWiseFunction::new(format!("data = data * {};", rhs))
                 .with_name("multiply_const"),
         })
     }
@@ -642,11 +658,13 @@ async fn test_mul_const() {
     assert_eq!(output[[2, 1]], 12.);
 }
 
-impl<const R: usize, T: DataType> Tensor<R, T> {
-    pub fn div_const(&self, value: f32) -> Self {
+impl<const R: usize, T: DataType> Div<f32> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn div(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data / {};", value))
+            function: ElementWiseFunction::new(format!("data = data / {};", rhs))
                 .with_name("divide_const"),
         })
     }

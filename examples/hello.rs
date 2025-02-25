@@ -9,10 +9,9 @@ async fn main() {
             device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
-    let data = [[1., 2.], [3., 4.], [5., 6.]];
-    let tensor1 = Tensor::new(&device, &data);
-    let data = [[1., 2.], [3., 4.], [5., 6.]];
-    let tensor2 = Tensor::new(&device, &data);
-    let new = tensor1.add(&tensor2).add_const(2.0);
+
+    let tensor1 = Tensor::new(&device, &[[1., 2.], [3., 4.], [5., 6.]]);
+    let tensor2 = Tensor::new(&device, &[[1., 2.], [3., 4.], [5., 6.]]);
+    let new = (&tensor1 + &tensor2) + 2.0;
     println!("{:?}", new.as_slice().await.unwrap());
 }
