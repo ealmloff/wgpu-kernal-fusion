@@ -10,7 +10,7 @@ TODO:
 - [x] Fuse Elementwise ops into Reduce ops
 - [x] PairWise ops
 - [x] Fuse Elementwise ops into PairWise ops
-- [ ] Fuse Elementwise ops together
+- [ ] Fuse PairWise ops together
 - [ ] Fuse parallel Reduce ops
 - [ ] Dynamically apply fusion based on runtime throughput data
 
