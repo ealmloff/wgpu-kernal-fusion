@@ -55,6 +55,14 @@ impl UntypedPairWiseKernel {
         }
     }
 
+    pub fn set_post_element_wise(&mut self, element_wise: UntypedElementWiseKernel) {
+        self.post_element_wise = element_wise;
+    }
+
+    pub fn set_pre_element_wise(&mut self, element_wise: [UntypedElementWiseKernel; 2]) {
+        self.pre_element_wise = element_wise;
+    }
+
     pub(crate) fn modify_data(&self, inline: bool, kernel: &mut String) {
         for (operation, input) in self.pre_element_wise.iter().zip(["a", "b"]) {
             if !operation.is_empty() {

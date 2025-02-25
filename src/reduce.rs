@@ -89,6 +89,14 @@ impl UntypedReduceKernel {
         }
     }
 
+    pub fn set_post_element_wise(&mut self, kernel: UntypedElementWiseKernel) {
+        self.post_element_wise = kernel;
+    }
+
+    pub fn set_pre_element_wise(&mut self, kernel: UntypedElementWiseKernel) {
+        self.pre_element_wise = kernel;
+    }
+
     fn merge(&self, inline: bool, kernel: &mut String) {
         if !inline {
             let call = self.reduce.call("merged", "data");
