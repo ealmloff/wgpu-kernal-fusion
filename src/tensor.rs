@@ -390,8 +390,8 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         Self::as_slice_from_tensor_data(&tensor).await
     }
 
-    pub(crate) fn element_wise(&self, function: ElementWiseOperation) -> Self {
-        Self {
+    pub(crate) fn element_wise<D2: DataType>(&self, function: ElementWiseOperation) -> Tensor<R, D2> {
+        Tensor {
             data: self.data.element_wise(function),
             datatype: PhantomData,
         }

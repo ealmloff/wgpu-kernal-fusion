@@ -4,14 +4,16 @@ use std::{
     sync::OnceLock,
 };
 
-use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
+use wgpu::CommandEncoder;
 
 use crate::{
     Tensor,
     compute_graph::AnyComputeKey,
-    layout::{TILE_SIZE, TensorLayout},
+    kernel::{Function, GenericKernel},
+    layout::TILE_SIZE,
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData},
+    visit_tiled::VisitTiledKernel,
 };
 
 #[cfg(test)]
@@ -25,18 +27,18 @@ pub(crate) struct ElementWiseOperation {
 
 pub(crate) struct UntypedElementWiseKernel {
     functions: Vec<ElementWiseFunction>,
-    dense_kernel: OnceLock<wgpu::ShaderModule>,
-    sparse_kernel: OnceLock<wgpu::ShaderModule>,
-    datatype: DataTypeEnum,
+    dense_kernel: OnceLock<VisitTiledKernel<1>>,
+    sparse_kernel: OnceLock<VisitTiledKernel<1>>,
+    input_datatype: DataTypeEnum,
 }
 
 impl UntypedElementWiseKernel {
-    pub fn new(functions: Vec<ElementWiseFunction>, datatype: DataTypeEnum) -> Self {
+    pub fn new(functions: Vec<ElementWiseFunction>, input_datatype: DataTypeEnum) -> Self {
         Self {
             functions,
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
-            datatype,
+            input_datatype,
         }
     }
 
@@ -45,160 +47,25 @@ impl UntypedElementWiseKernel {
             functions: Vec::new(),
             dense_kernel: OnceLock::new(),
             sparse_kernel: OnceLock::new(),
-            datatype,
+            input_datatype: datatype,
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.functions.is_empty()
-    }
-
-    pub(crate) fn modify_data(&self, inline: bool, kernel: &mut String) {
-        if !inline {
-            let call = self
-                .functions
-                .iter()
-                .rev()
-                .fold(format!("data"), |acc, f| f.call(acc));
-
-            kernel.push_str(&format!("data = {call};\n"));
-        } else {
-            for function in self.functions.iter().rev() {
-                kernel.push_str(&function.operation);
-                kernel.push('\n');
-            }
-        }
-    }
-
-    pub(crate) fn add_functions(&self, inline: bool, kernel: &mut String) {
-        if !inline {
-            for function in &self.functions {
-                kernel.push_str(&function.function(self.datatype));
-            }
-        }
-    }
-
-    fn tiled_map(
-        &self,
-        blocksize: u32,
-        inline: bool,
-        contiguous: bool,
-        tensor_layout: &TensorLayout,
-    ) -> String {
-        let dtype = self.datatype;
-        let rank = tensor_layout.rank();
-        assert!(rank <= 3, "TensorLayout only supports up to 3 rank tensors");
-
-        let mut kernel = String::new();
-        if dtype == DataTypeEnum::F16 {
-            kernel.push_str("enable f16;\n");
-        }
-        tensor_layout.wgsl_type_definition(&mut kernel);
-        kernel.push_str("@group(0) @binding(0) var<uniform> tensor_layout: TensorLayout;\n");
-        kernel.push_str(&format!(
-            "@group(0) @binding(1) var<storage, read_write> tensor: array<{dtype}>;\n"
-        ));
-        kernel.push_str(&format!("const BLOCKSIZE: u32 = {blocksize}u;\n"));
-        kernel.push_str(&format!("const TILE_SIZE: u32 = {TILE_SIZE}u;\n"));
-        self.add_functions(inline, &mut kernel);
-        kernel.push_str("\n@compute @workgroup_size(");
-        if contiguous {
-            kernel.push_str("BLOCKSIZE");
-        } else {
-            for i in 0..rank {
-                kernel.push_str("BLOCKSIZE");
-                if i < rank - 1 {
-                    kernel.push_str(", ");
-                }
-            }
-        }
-        kernel.push_str(")\n");
-        kernel.push_str("fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {\n");
-        if contiguous {
-            for local_index in 0..TILE_SIZE {
-                let index = format!("index_{local_index}");
-                kernel.push_str(&format!(
-                    "\t\tlet {index} = global_id.x * TILE_SIZE + {local_index};\n"
-                ));
-                kernel.push_str(&format!("\t\tif {index} < \n"));
-                for i in 0..rank {
-                    kernel.push_str(&format!("tensor_layout.shape_{i}"));
-                    if i < rank - 1 {
-                        kernel.push_str(" * ");
-                    }
-                }
-                kernel.push_str(" {\n");
-                kernel.push_str(&format!("\t\t\tvar data = tensor[{index}];\n"));
-                kernel.push_str("\t\t\t");
-                self.modify_data(inline, &mut kernel);
-                kernel.push_str(&format!("\t\t\ttensor[{index}] = data;\n"));
-                kernel.push_str("\t\t}\n");
-            }
-        } else {
-            for i in 0..rank {
-                let index = ["x", "y", "z"][i];
-                kernel.push_str(&format!(
-                    "\tlet tile_index_{i} = global_id.{index} * TILE_SIZE;\n"
-                ));
-            }
-            kernel.push('\n');
-
-            for i in 0..rank {
-                for _ in 0..(i + 1) {
-                    kernel.push('\t');
-                }
-                kernel.push_str(&format!("for (var local_index_{i} = 0u; local_index_{i} < TILE_SIZE; local_index_{i}++) {{\n"));
-            }
-
-            for i in 0..rank {
-                for _ in 0..(rank + 1) {
-                    kernel.push('\t');
-                }
-                kernel.push_str(&format!(
-                    "let merged_index_{i} = tile_index_{i} + local_index_{i};\n"
-                ));
-            }
-
-            for _ in 0..(rank + 1) {
-                kernel.push('\t');
-            }
-
-            kernel.push_str("if ");
-            for i in 0..rank {
-                kernel.push_str(&format!("merged_index_{i} < tensor_layout.shape_{i} && "));
-            }
-            kernel.push_str("true {\n");
-            for _ in 0..(rank + 2) {
-                kernel.push('\t');
-            }
-            kernel.push_str("let index = tensor_layout.offset + ");
-            for i in 0..rank {
-                kernel.push_str(&format!("tensor_layout.stride_{i} * merged_index_{i} + "));
-            }
-            kernel.push_str("0;\n");
-            for _ in 0..(rank + 2) {
-                kernel.push('\t');
-            }
-            kernel.push_str("\t\t\tvar data = tensor[index];\n");
-            self.modify_data(inline, &mut kernel);
-            kernel.push_str("\t\t\ttensor[index] = data;\n");
-
-            for _ in 0..(rank + 1) {
-                kernel.push('\t');
-            }
-            kernel.push_str("}\n");
-
-            for i in (0..rank).rev() {
-                for _ in 0..(i + 1) {
-                    kernel.push('\t');
-                }
-                kernel.push_str("}\n");
-            }
-        }
-
-        kernel.push_str("}\n");
-
-        kernel
+    pub fn add_functions(&self, kernel: &mut GenericKernel) -> Vec<Function> {
+        let mut input_datatype = self.input_datatype;
+        self.functions
+            .iter()
+            .rev()
+            .map(|f| {
+                let function = kernel.add_function(
+                    f.datatype,
+                    f.operation.clone(),
+                    [("input".to_string(), input_datatype.to_string())],
+                );
+                input_datatype = f.datatype;
+                function
+            })
+            .collect()
     }
 
     pub fn run_with_query(
@@ -209,159 +76,45 @@ impl UntypedElementWiseKernel {
     ) {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
-        let layout = TensorLayout::from(tensor.layout());
-        let max_blocksize = if contiguous {
-            256
-        } else {
-            // max_blocksize^R = 256
-            (256f64.powf(1. / rank as f64)).floor() as u32
-        };
-        let module = if contiguous {
-            self.dense_kernel.get_or_init(|| {
-                let source = self.tiled_map(max_blocksize, true, contiguous, &layout);
-                tensor.device().create_shader_module(source)
-            })
-        } else {
-            self.sparse_kernel.get_or_init(|| {
-                let source = self.tiled_map(max_blocksize, true, contiguous, &layout);
-                tensor.device().create_shader_module(source)
-            })
-        };
 
-        let bind_group_layout = tensor.device().wgpu_device().create_bind_group_layout(
-            &wgpu::BindGroupLayoutDescriptor {
-                label: None,
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-            },
-        );
-        let compute_pipeline_layout =
-            tensor
-                .device()
-                .wgpu_device()
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
-        let pipeline = tensor.device().wgpu_device().create_compute_pipeline(
-            &wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&compute_pipeline_layout),
-                module,
-                entry_point: Some("main"),
-                cache: None,
-                compilation_options: PipelineCompilationOptions::default(),
-            },
-        );
-
-        let layout =
-            tensor
-                .device()
-                .wgpu_device()
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: None,
-                    contents: bytemuck::cast_slice(&layout.data),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
-
-        let bind_group =
-            tensor
-                .device()
-                .wgpu_device()
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None,
-                    layout: &bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: layout.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: tensor.buffer().as_entire_binding(),
-                        },
-                    ],
-                });
-
-        {
-            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
-            });
-            cpass.set_pipeline(&pipeline);
-            cpass.set_bind_group(0, &bind_group, &[]);
-            let layout = tensor.layout();
-            let shape = layout.shape();
-            let (workgroup_size_x, workgroup_size_y, workgroup_size_z) = if contiguous {
-                (
-                    shape
+        let functions = OnceLock::new();
+        let create_kernel = || {
+            VisitTiledKernel::new(
+                rank as u32,
+                TILE_SIZE,
+                contiguous,
+                tensor.datatype(),
+                |kernel, [index], [tensor]| {
+                    let result = functions
+                        .get_or_init(|| self.add_functions(kernel))
                         .iter()
-                        .map(|x| *x as u32)
-                        .product::<u32>()
-                        .div_ceil(TILE_SIZE * max_blocksize),
-                    1,
-                    1,
-                )
-            } else {
-                let workgroup_size_x = shape
-                    .first()
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                let workgroup_size_y = shape
-                    .get(1)
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                let workgroup_size_z = shape
-                    .get(2)
-                    .map(|x| (*x as u32).div_ceil(TILE_SIZE * max_blocksize))
-                    .unwrap_or(1);
-                (workgroup_size_x, workgroup_size_y, workgroup_size_z)
-            };
-            cpass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, workgroup_size_z)
-        }
-        if let Some(query) = query {
-            query.resolve(command_encoder);
-        }
+                        .fold(format!("{tensor}[{index}]"), |acc, f| f.call(vec![acc]));
+                    format!("{tensor}[{index}] = {result};")
+                },
+            )
+        };
+        let kernel = if contiguous {
+            self.dense_kernel.get_or_init(create_kernel)
+        } else {
+            self.sparse_kernel.get_or_init(create_kernel)
+        };
+        kernel.run_with_query([tensor], query, command_encoder);
     }
 }
 
 #[derive(Clone)]
 pub struct ElementWiseFunction {
     name: Option<String>,
-    name_id: u64,
     operation: String,
+    datatype: DataTypeEnum,
 }
 
 impl ElementWiseFunction {
-    fn new(operation: impl Display) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let name_id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
+    fn new(operation: impl Display, datatype: DataTypeEnum) -> Self {
         Self {
             name: None,
-            name_id,
             operation: operation.to_string(),
+            datatype,
         }
     }
 
@@ -373,24 +126,6 @@ impl ElementWiseFunction {
     pub(crate) fn name(&self) -> &str {
         self.name.as_deref().unwrap_or("element_wise")
     }
-
-    fn call(&self, data: impl Display) -> String {
-        let name_id = self.name_id;
-        format!("unary_{name_id}({data})")
-    }
-
-    fn function(&self, dtype: DataTypeEnum) -> String {
-        let Self {
-            name_id, operation, ..
-        } = self;
-        format!(
-            r#"fn unary_{name_id}(input: {dtype}) -> {dtype} {{
-    var data = input;
-    {operation}
-    return data;
-}}"#
-        )
-    }
 }
 
 impl<const R: usize, T: DataType> Add<f32> for Tensor<R, T> {
@@ -399,8 +134,11 @@ impl<const R: usize, T: DataType> Add<f32> for Tensor<R, T> {
     fn add(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data + {};", rhs))
-                .with_name("add_const"),
+            function: ElementWiseFunction::new(
+                format!("let output = input + {};", rhs),
+                T::WGSL_TYPE,
+            )
+            .with_name("add_const"),
         })
     }
 }
@@ -583,8 +321,11 @@ impl<const R: usize, T: DataType> Sub<f32> for Tensor<R, T> {
     fn sub(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data - {};", rhs))
-                .with_name("subtract_const"),
+            function: ElementWiseFunction::new(
+                format!("let output = input - {};", rhs),
+                T::WGSL_TYPE,
+            )
+            .with_name("subtract_const"),
         })
     }
 }
@@ -620,8 +361,11 @@ impl<const R: usize, T: DataType> Mul<f32> for Tensor<R, T> {
     fn mul(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data * {};", rhs))
-                .with_name("multiply_const"),
+            function: ElementWiseFunction::new(
+                format!("let output = input * {};", rhs),
+                T::WGSL_TYPE,
+            )
+            .with_name("multiply_const"),
         })
     }
 }
@@ -657,8 +401,11 @@ impl<const R: usize, T: DataType> Div<f32> for Tensor<R, T> {
     fn div(self, rhs: f32) -> Self::Output {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new(format!("data = data / {};", rhs))
-                .with_name("divide_const"),
+            function: ElementWiseFunction::new(
+                format!("let output = input / {};", rhs),
+                T::WGSL_TYPE,
+            )
+            .with_name("divide_const"),
         })
     }
 }
@@ -692,7 +439,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn exp(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = exp(data);").with_name("exp"),
+            function: ElementWiseFunction::new("let output = exp(input);", D::WGSL_TYPE)
+                .with_name("exp"),
         })
     }
 }
@@ -726,7 +474,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn exp2(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = exp2(data);").with_name("exp2"),
+            function: ElementWiseFunction::new("let output = exp2(input);", D::WGSL_TYPE)
+                .with_name("exp2"),
         })
     }
 }
@@ -760,7 +509,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn log(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = log(data);").with_name("log"),
+            function: ElementWiseFunction::new("let output = log(input);", D::WGSL_TYPE)
+                .with_name("log"),
         })
     }
 }
@@ -794,7 +544,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn log2(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = log2(data);").with_name("log2"),
+            function: ElementWiseFunction::new("let output = log2(input);", D::WGSL_TYPE)
+                .with_name("log2"),
         })
     }
 }
@@ -828,7 +579,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sqrt(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = sqrt(data);").with_name("sqrt"),
+            function: ElementWiseFunction::new("let output = sqrt(input);", D::WGSL_TYPE)
+                .with_name("sqrt"),
         })
     }
 }
@@ -862,7 +614,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sin(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = sin(data);").with_name("sin"),
+            function: ElementWiseFunction::new("let output = sin(input);", D::WGSL_TYPE)
+                .with_name("sin"),
         })
     }
 }
@@ -896,7 +649,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn cos(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = cos(data);").with_name("cos"),
+            function: ElementWiseFunction::new("let output = cos(input);", D::WGSL_TYPE)
+                .with_name("cos"),
         })
     }
 }
@@ -930,7 +684,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn tan(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = tan(data);").with_name("tan"),
+            function: ElementWiseFunction::new("let output = tan(input);", D::WGSL_TYPE)
+                .with_name("tan"),
         })
     }
 }
@@ -964,7 +719,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn asin(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = asin(data);").with_name("asin"),
+            function: ElementWiseFunction::new("let output = asin(input);", D::WGSL_TYPE)
+                .with_name("asin"),
         })
     }
 }
@@ -1002,7 +758,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn acos(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = acos(data);").with_name("acos"),
+            function: ElementWiseFunction::new("let output = acos(input);", D::WGSL_TYPE)
+                .with_name("acos"),
         })
     }
 }
@@ -1040,7 +797,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn atan(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = atan(data);").with_name("atan"),
+            function: ElementWiseFunction::new("let output = atan(input);", D::WGSL_TYPE)
+                .with_name("atan"),
         })
     }
 }
@@ -1074,7 +832,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sinh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = sinh(data);").with_name("sinh"),
+            function: ElementWiseFunction::new("let output = sinh(input);", D::WGSL_TYPE)
+                .with_name("sinh"),
         })
     }
 }
@@ -1108,7 +867,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn cosh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = cosh(data);").with_name("cosh"),
+            function: ElementWiseFunction::new("let output = cosh(input);", D::WGSL_TYPE)
+                .with_name("cosh"),
         })
     }
 }
@@ -1142,7 +902,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn tanh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = tanh(data);").with_name("tanh"),
+            function: ElementWiseFunction::new("let output = tanh(input);", D::WGSL_TYPE)
+                .with_name("tanh"),
         })
     }
 }
@@ -1176,7 +937,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn asinh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = asinh(data);").with_name("asinh"),
+            function: ElementWiseFunction::new("let output = asinh(input);", D::WGSL_TYPE)
+                .with_name("asinh"),
         })
     }
 }
@@ -1214,7 +976,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn acosh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = acosh(data);").with_name("acosh"),
+            function: ElementWiseFunction::new("let output = acosh(input);", D::WGSL_TYPE)
+                .with_name("acosh"),
         })
     }
 }
@@ -1252,7 +1015,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn atanh(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = atanh(data);").with_name("atanh"),
+            function: ElementWiseFunction::new("let output = atanh(input);", D::WGSL_TYPE)
+                .with_name("atanh"),
         })
     }
 }
@@ -1290,7 +1054,8 @@ impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn abs(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("data = abs(data);").with_name("abs"),
+            function: ElementWiseFunction::new("let output = abs(input);", D::WGSL_TYPE)
+                .with_name("abs"),
         })
     }
 }
@@ -1319,4 +1084,29 @@ async fn test_abs() {
     assert!((output[[1, 1]] - data[1][1].abs()).abs() < 0.001);
     assert!((output[[2, 0]] - data[2][0].abs()).abs() < 0.001);
     assert!((output[[2, 1]] - data[2][1].abs()).abs() < 0.001);
+}
+
+pub trait CastTensor<const R: usize, T> {
+    /// Casts the tensor to another type
+    fn cast(&self) -> Tensor<R, T>;
+}
+
+impl<const R: usize> CastTensor<R, half::f16> for Tensor<R, f32> {
+    fn cast(&self) -> Tensor<R, half::f16> {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("let output = f16(input);", DataTypeEnum::F16)
+                .with_name("abs"),
+        })
+    }
+}
+
+impl<const R: usize> CastTensor<R, f32> for Tensor<R, half::f16> {
+    fn cast(&self) -> Tensor<R, f32> {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("let output = f32(input);", DataTypeEnum::F32)
+                .with_name("abs"),
+        })
+    }
 }

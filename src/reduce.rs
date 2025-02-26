@@ -111,9 +111,7 @@ impl UntypedReduceKernel {
     fn tiled_map(&self, blocksize: u32, inline: bool, layout: &ReduceTensorLayout) -> String {
         let dtype = self.datatype;
         let mut kernel = String::new();
-        if dtype == DataTypeEnum::F16 {
-            kernel.push_str("enable f16;\n");
-        }
+        kernel.push_str("enable f16;\n");
         layout.wgsl_type_definition(&mut kernel);
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
         // And the mlx implementation https://github.com/ml-explore/mlx/blob/b05bcfd27f5f1293401b74dce02e38c8fd7ef66a/mlx/backend/metal/kernels/arg_reduce.metal

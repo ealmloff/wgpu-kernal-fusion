@@ -10,8 +10,11 @@ TODO:
 - [x] Fuse Elementwise ops into Reduce ops
 - [x] PairWise ops
 - [x] Fuse Elementwise ops into PairWise ops
-- [ ] Fuse PairWise ops together
-- [ ] Fuse parallel Reduce ops
+- [ ] Analyze buffer usage for in-place ops
+- [ ] Memory move/cat/etc ops
+- [ ] Cast ops
+- [ ] Fuse PairWise ops together?
+- [ ] Fuse parallel Reduce ops?
 - [ ] Dynamically apply fusion based on runtime throughput data
 
 ## Resources
