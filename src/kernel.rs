@@ -20,8 +20,10 @@ pub(crate) struct GenericKernel {
     workgroup_size: [u32; 3],
     max_binding: u32,
     max_function_id: u32,
+    max_global_id: u32,
     inputs: Vec<KernelInput>,
     functions: Vec<Function>,
+    globals: Vec<KernelGlobal>,
     enabled_builtins: EnumSet<EnabledBuiltins>,
     kernel: OnceLock<wgpu::ShaderModule>,
     body: String,
@@ -35,6 +37,8 @@ impl GenericKernel {
             max_binding: 0,
             functions: Default::default(),
             max_function_id: 0,
+            globals: Default::default(),
+            max_global_id: 0,
             enabled_builtins: Default::default(),
             kernel: OnceLock::new(),
             body: String::new(),
@@ -110,6 +114,26 @@ impl GenericKernel {
         });
 
         input
+    }
+
+    pub(crate) fn add_global_array(
+        &mut self,
+        space: KernelGlobalSpace,
+        array_type: DataTypeEnum,
+        size: String,
+    ) -> KernelGlobal {
+        let index = self.max_global_id;
+        self.max_global_id += 1;
+        let global = KernelGlobal::new(
+            index,
+            space,
+            KernelGlobalType::Array(ArrayType {
+                size,
+                datatype: array_type,
+            }),
+        );
+        self.globals.push(global.clone());
+        global
     }
 
     pub(crate) fn subgroup_size(&mut self) -> String {
@@ -274,10 +298,11 @@ impl GenericKernel {
         &self,
         device: &crate::Device,
         bind_group_layout: &BindGroupLayout,
-        tensors: impl IntoIterator<Item = &'a TensorData>,
+        tensors: impl IntoIterator<Item = impl Into<KernelInputValue>>,
     ) -> wgpu::BindGroup {
         let mut entries = Vec::new();
         let mut owned_entries = Vec::new();
+        let tensors = tensors.into_iter().map(|x| x.into()).collect::<Vec<_>>();
         let create_u32_buffer = |device: &crate::Device, data: u32| {
             device
                 .wgpu_device()
@@ -287,9 +312,18 @@ impl GenericKernel {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 })
         };
-        for (input, tensor) in self.inputs.iter().zip(tensors.into_iter()) {
-            match &input.ty {
-                KernelInputType::Tensor(tensor_input) => {
+        let create_f32_buffer = |device: &crate::Device, data: f32| {
+            device
+                .wgpu_device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::bytes_of(&data),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+        };
+        for (input, value) in self.inputs.iter().zip(tensors.iter()) {
+            match (&input.ty, value) {
+                (KernelInputType::Tensor(tensor_input), KernelInputValue::Tensor(tensor)) => {
                     // Tensor weight
                     entries.push(wgpu::BindGroupEntry {
                         binding: tensor_input.get_tensor_binding(),
@@ -318,6 +352,15 @@ impl GenericKernel {
                         ));
                     }
                 }
+                (KernelInputType::Integer(integer_input), KernelInputValue::Integer(value)) => {
+                    owned_entries.push((
+                        integer_input.index,
+                        create_u32_buffer(&device, *value as u32),
+                    ));
+                }
+                (KernelInputType::Float(float_input), KernelInputValue::Float(value)) => {
+                    owned_entries.push((float_input.index, create_f32_buffer(&device, *value)));
+                }
                 _ => todo!(),
             }
         }
@@ -341,7 +384,7 @@ impl GenericKernel {
     pub(crate) fn run_with_query<'a>(
         &self,
         device: &Device,
-        tensors: impl IntoIterator<Item = &'a TensorData>,
+        tensors: impl IntoIterator<Item = impl Into<KernelInputValue>>,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
         workgroup_dispatch_size: [u32; 3],
@@ -371,6 +414,10 @@ impl GenericKernel {
 
         for input in &self.inputs {
             write!(f, "{input}")?;
+        }
+
+        for global in &self.globals {
+            write!(f, "{}", global.global_definition())?;
         }
 
         for function in &self.functions {
@@ -436,16 +483,13 @@ impl GenericKernel {
                 .enabled_builtins
                 .contains(EnabledBuiltins::SubgroupLocalIndex)
         {
-            writeln!(f, "let workgroup_local_index = global_id.x % BLOCKSIZE;")?;
+            writeln!(f, "let workgroup_local_id = global_id.x % BLOCKSIZE;")?;
         }
         if self
             .enabled_builtins
             .contains(EnabledBuiltins::SubgroupIndex)
         {
-            writeln!(
-                f,
-                "let subgroup_id = workgroup_local_index / subgroup_size;"
-            )?;
+            writeln!(f, "let subgroup_id = workgroup_local_id / subgroup_size;")?;
         }
         if self
             .enabled_builtins
@@ -453,7 +497,7 @@ impl GenericKernel {
         {
             writeln!(
                 f,
-                "let subgroup_local_id = workgroup_local_index % subgroup_size;"
+                "let subgroup_local_id = workgroup_local_id % subgroup_size;"
             )?;
         }
         if self
@@ -468,6 +512,30 @@ impl GenericKernel {
         println!("{}", f);
 
         Ok(())
+    }
+}
+
+pub(crate) enum KernelInputValue {
+    Tensor(TensorData),
+    Integer(u32),
+    Float(f32),
+}
+
+impl From<TensorData> for KernelInputValue {
+    fn from(value: TensorData) -> Self {
+        Self::Tensor(value)
+    }
+}
+
+impl From<u32> for KernelInputValue {
+    fn from(value: u32) -> Self {
+        Self::Integer(value)
+    }
+}
+
+impl From<f32> for KernelInputValue {
+    fn from(value: f32) -> Self {
+        Self::Float(value)
     }
 }
 
@@ -523,6 +591,60 @@ impl Function {
     }
 }
 
+#[derive(Clone)]
+pub enum KernelGlobalSpace {
+    Workgroup,
+}
+
+impl Display for KernelGlobalSpace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KernelGlobalSpace::Workgroup => write!(f, "workgroup"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct KernelGlobal {
+    id: u32,
+    space: KernelGlobalSpace,
+    ty: KernelGlobalType,
+}
+
+impl KernelGlobal {
+    pub fn new(id: u32, space: KernelGlobalSpace, ty: KernelGlobalType) -> Self {
+        Self { id, space, ty }
+    }
+
+    pub fn global_definition(&self) -> String {
+        match &self.ty {
+            KernelGlobalType::Array(array) => {
+                let dtype = &array.datatype;
+                let size = &array.size;
+                let space = &self.space;
+                format!("var<{space}> {self}: array<{dtype}, {size}>;\n")
+            }
+        }
+    }
+}
+
+impl Display for KernelGlobal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "g_{}", self.id)
+    }
+}
+
+#[derive(Clone)]
+pub enum KernelGlobalType {
+    Array(ArrayType),
+}
+
+#[derive(Clone)]
+pub struct ArrayType {
+    size: String,
+    datatype: DataTypeEnum,
+}
+
 struct KernelInput {
     ty: KernelInputType,
 }
@@ -562,7 +684,11 @@ impl Display for KernelInput {
                 }
             }
             KernelInputType::Integer(integer) => {
-                write!(f, "var<uniform> i_{}: i32;", integer.index)?
+                let index = integer.index;
+                write!(
+                    f,
+                    "@group(0) @binding({index}) var<uniform> i_{index}: u32;"
+                )?
             }
             KernelInputType::Float(float) => write!(f, "var<uniform> i_{}: f32;", float.index)?,
         }

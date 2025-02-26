@@ -66,15 +66,11 @@ impl Layout {
         }
     }
 
-    pub fn from_parts<const R: usize>(
-        offset: usize,
-        shape: [usize; R],
-        strides: [usize; R],
-    ) -> Self {
+    pub fn from_parts(offset: usize, shape: Box<[usize]>, strides: Box<[usize]>) -> Self {
         Self {
             offset,
-            shape: Box::new(shape),
-            strides: Box::new(strides),
+            shape,
+            strides,
         }
     }
 

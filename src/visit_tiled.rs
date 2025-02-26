@@ -193,7 +193,7 @@ impl<const T: usize> VisitTiledKernel<T> {
         let device = tensors[0].device();
         self.kernel.run_with_query(
             device,
-            tensors.iter().copied(),
+            tensors.iter().map(|x| (*x).clone()),
             query,
             command_encoder,
             workgroup_dispatch_size,

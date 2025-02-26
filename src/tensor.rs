@@ -171,17 +171,24 @@ pub(crate) struct TensorData {
 impl TensorData {
     pub(crate) fn new_from_buffer(
         device: &Device,
-        buffer: wgpu::Buffer,
+        buffer: impl Into<Arc<wgpu::Buffer>>,
         size: &[usize],
+        datatype: DataTypeEnum,
+    ) -> Self {
+        let layout = Layout::contiguous(size);
+        Self::new_from_parts(device, buffer, layout, datatype)
+    }
+
+    pub(crate) fn new_from_parts(
+        device: &Device,
+        buffer: impl Into<Arc<wgpu::Buffer>>,
+        layout: Layout,
         datatype: DataTypeEnum,
     ) -> Self {
         Self {
             device: device.clone(),
-            buffer: Arc::new(buffer),
-            info: TensorInfo {
-                layout: Layout::contiguous(size),
-                datatype,
-            },
+            buffer: buffer.into(),
+            info: TensorInfo { layout, datatype },
         }
     }
 
@@ -247,7 +254,7 @@ impl TensorData {
         &self.device
     }
 
-    pub(crate) fn buffer(&self) -> &wgpu::Buffer {
+    pub(crate) fn buffer(&self) -> &Arc<wgpu::Buffer> {
         &self.buffer
     }
 }
@@ -390,7 +397,10 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         Self::as_slice_from_tensor_data(&tensor).await
     }
 
-    pub(crate) fn element_wise<D2: DataType>(&self, function: ElementWiseOperation) -> Tensor<R, D2> {
+    pub(crate) fn element_wise<D2: DataType>(
+        &self,
+        function: ElementWiseOperation,
+    ) -> Tensor<R, D2> {
         Tensor {
             data: self.data.element_wise(function),
             datatype: PhantomData,
