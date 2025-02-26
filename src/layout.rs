@@ -13,43 +13,6 @@ fn continuous_strides(shape: &[usize]) -> Box<[usize]> {
 }
 
 #[derive(Clone)]
-pub(crate) struct TensorLayout {
-    pub(crate) data: Box<[u32]>,
-}
-
-impl TensorLayout {
-    pub(crate) fn rank(&self) -> usize {
-        (self.data.len() - 1) / 2
-    }
-
-    pub(crate) fn wgsl_type_definition(&self, kernel: &mut String) {
-        let rank = self.rank();
-        kernel.push_str("struct TensorLayout {\n");
-        for i in 0..rank {
-            kernel.push_str(&format!("\tstride_{}: u32,\n", i));
-        }
-        for i in 0..rank {
-            kernel.push_str(&format!("\tshape_{}: u32,\n", i));
-        }
-        kernel.push_str("\toffset: u32,\n");
-        kernel.push_str("}\n");
-    }
-}
-
-impl From<&Layout> for TensorLayout {
-    fn from(layout: &Layout) -> Self {
-        let data = layout
-            .strides
-            .iter()
-            .map(|x| *x as u32)
-            .chain(layout.shape.iter().map(|x| *x as u32))
-            .chain(std::iter::once(layout.offset as u32))
-            .collect();
-        Self { data }
-    }
-}
-
-#[derive(Clone)]
 pub struct Layout {
     offset: usize,
     shape: Box<[usize]>,
