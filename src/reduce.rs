@@ -76,8 +76,15 @@ impl UntypedReduceKernel {
         )
     }
 
+    pub fn out_datatype(&self) -> DataTypeEnum {
+        self.post_element_wise
+            .out_datatype()
+            .unwrap_or(self.datatype)
+    }
+
     fn tiled_map(&self, blocksize: u32, input_rank: u32) -> GenericKernel {
         let dtype = self.datatype;
+        let out_datatype = self.out_datatype();
         let mut kernel = GenericKernel::new();
         let output_rank = input_rank - 1;
         // Based on v7 of https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
@@ -88,11 +95,14 @@ impl UntypedReduceKernel {
         // the storage memory only inside the workgroup.
         // This kernel just uses one workgroup per reduction unit like the MLX kernel
         let input_tensor = kernel.add_tensor_input(output_rank, false, dtype);
-        let output_tensor = kernel.add_tensor_input(output_rank, true, dtype);
+        let output_tensor = kernel.add_tensor_input(output_rank, true, out_datatype);
         let reduce_size = kernel.add_integer_input();
         let reduce_stride = kernel.add_integer_input();
-        let local_data =
-            kernel.add_global_array(KernelGlobalSpace::Workgroup, dtype, blocksize.to_string());
+        let local_data = kernel.add_global_array(
+            KernelGlobalSpace::Workgroup,
+            dtype,
+            blocksize.to_string(),
+        );
         let reduce = self.add_function(&mut kernel);
         let pre_element_wise = self.add_pre_element_wise_functions(&mut kernel);
         let post_element_wise = self.add_post_element_wise_functions(&mut kernel);
@@ -181,13 +191,13 @@ impl UntypedReduceKernel {
             "let in_index = in_start_offset + axis_index * {reduce_stride};"
         )
         .unwrap();
-        writeln!(&mut kernel_body, "var data = {input_tensor}[in_index];").unwrap();
         writeln!(
             &mut kernel_body,
-            "data = {};",
+            "let data = {};",
             pre_element_wise
                 .iter()
-                .fold("data".to_string(), |acc, f| f.call(vec![acc]))
+                .fold(format!("{input_tensor}[in_index]"), |acc, f| f
+                    .call(vec![acc]))
         )
         .unwrap();
         writeln!(
@@ -271,13 +281,12 @@ impl UntypedReduceKernel {
 
         // Write the output to the output tensor if this is the first thread in the workgroup
         writeln!(&mut kernel_body, "if {workgroup_local_index} == 0u {{").unwrap();
-        writeln!(&mut kernel_body, "var data = merged;").unwrap();
         writeln!(
             &mut kernel_body,
-            "data = {};",
+            "let data = {};",
             post_element_wise
                 .iter()
-                .fold("data".to_string(), |acc, f| f.call(vec![acc]))
+                .fold("merged".to_string(), |acc, f| f.call(vec![acc]))
         )
         .unwrap();
         writeln!(
@@ -307,13 +316,14 @@ impl UntypedReduceKernel {
             .enumerate()
             .filter_map(|(i, x)| (i != dim).then_some(*x))
             .collect::<Vec<_>>();
+        let output_type = self.out_datatype();
         let output_buf = tensor
             .device()
             .wgpu_device()
             .create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: padded_tensor_size(
-                    (new_tensor_shape.iter().product::<usize>() * self.datatype.element_size())
+                    (new_tensor_shape.iter().product::<usize>() * output_type.element_size())
                         as u64,
                 ),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
@@ -323,7 +333,7 @@ impl UntypedReduceKernel {
             tensor.device(),
             output_buf,
             &new_tensor_shape,
-            self.datatype,
+            output_type,
         );
 
         self.run_with_query_and_out_tensor(tensor, dim, query, &output_tensor, command_encoder);

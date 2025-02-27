@@ -69,6 +69,10 @@ impl UntypedElementWiseKernel {
             .collect()
     }
 
+    pub fn out_datatype(&self) -> Option<DataTypeEnum> {
+        Some(self.functions.first()?.datatype)
+    }
+
     pub fn run_with_query(
         &self,
         tensor: &TensorData,
@@ -77,7 +81,7 @@ impl UntypedElementWiseKernel {
     ) -> Option<TensorData> {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
-        let output_type = self.functions.last().unwrap().datatype;
+        let output_type = self.out_datatype().unwrap();
         let requires_new_tensor = self.input_datatype != output_type;
 
         let functions = OnceLock::new();
