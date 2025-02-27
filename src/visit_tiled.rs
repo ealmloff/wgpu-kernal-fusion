@@ -7,28 +7,28 @@ use crate::{
     kernel::{GenericKernel, TensorInput},
 };
 
-pub(crate) struct VisitTiledKernel<const T: usize> {
+pub(crate) struct VisitTiledKernel {
     rank: u32,
     contiguous: bool,
     tile_size: u32,
     kernel: GenericKernel,
 }
 
-impl<const T: usize> VisitTiledKernel<T> {
+impl VisitTiledKernel {
     pub(crate) fn new(
         rank: u32,
         tile_size: u32,
         contiguous: bool,
-        datatype: DataTypeEnum,
-        modify_data: impl FnMut(&mut GenericKernel, [String; T], &[TensorInput; T]) -> String,
+        datatypes: Vec<DataTypeEnum>,
+        modify_data: impl FnMut(&mut GenericKernel, &[String], &[TensorInput]) -> String,
     ) -> Self {
-        const { assert!(T > 0) }
         let mut kernel = GenericKernel::new();
+        let tensor_count = datatypes.len();
         let kernel_text = Self::build_tiled_map_kernel(
             rank,
             tile_size,
             contiguous,
-            datatype,
+            datatypes,
             &mut kernel,
             modify_data,
         );
@@ -37,7 +37,7 @@ impl<const T: usize> VisitTiledKernel<T> {
         let workgroup_size = if contiguous {
             [blocksize, 1, 1]
         } else {
-            std::array::from_fn(|i| if T > i { blocksize } else { 1 })
+            std::array::from_fn(|i| if tensor_count > i { blocksize } else { 1 })
         };
         kernel.set_workgroup_size(workgroup_size);
         Self {
@@ -65,15 +65,18 @@ impl<const T: usize> VisitTiledKernel<T> {
         rank: u32,
         tile_size: u32,
         contiguous: bool,
-        datatype: DataTypeEnum,
+        datatypes: Vec<DataTypeEnum>,
         mut kernel: &mut GenericKernel,
-        mut modify_data: impl FnMut(&mut GenericKernel, [String; T], &[TensorInput; T]) -> String,
+        mut modify_data: impl FnMut(&mut GenericKernel, &[String], &[TensorInput]) -> String,
     ) -> String {
         assert!(rank <= 3, "TensorLayout only supports up to 3 rank tensors");
 
         let mut kernel_body = String::new();
         let global_id = kernel.global_id();
-        let tensors = std::array::from_fn(|_| kernel.add_tensor_input(rank, true, datatype));
+        let tensors = datatypes
+            .iter()
+            .map(|ty| kernel.add_tensor_input(rank, true, *ty))
+            .collect::<Vec<_>>();
 
         if contiguous {
             for local_index in 0..tile_size {
@@ -92,11 +95,10 @@ impl<const T: usize> VisitTiledKernel<T> {
                     }
                 }
                 writeln!(&mut kernel_body, " {{").unwrap();
-                let modify_data = modify_data(
-                    &mut kernel,
-                    std::array::from_fn(|_| index.clone()),
-                    &tensors,
-                );
+                let indexes = (0..datatypes.len())
+                    .map(|_| index.clone())
+                    .collect::<Vec<_>>();
+                let modify_data = modify_data(&mut kernel, &indexes, &tensors);
                 writeln!(&mut kernel_body, "{modify_data}").unwrap();
                 writeln!(&mut kernel_body, "}}").unwrap();
             }
@@ -138,11 +140,10 @@ impl<const T: usize> VisitTiledKernel<T> {
                 }
                 writeln!(&mut kernel_body, "0;").unwrap();
             }
-            let modify_data = modify_data(
-                &mut kernel,
-                std::array::from_fn(|i| format!("index_{i}")),
-                &tensors,
-            );
+            let indexes = (0..datatypes.len())
+                .map(|i| format!("index_{i}"))
+                .collect::<Vec<_>>();
+            let modify_data = modify_data(&mut kernel, &indexes, &tensors);
             writeln!(&mut kernel_body, "{modify_data}").unwrap();
 
             writeln!(&mut kernel_body, "}}").unwrap();
@@ -155,12 +156,13 @@ impl<const T: usize> VisitTiledKernel<T> {
         kernel_body
     }
 
-    pub(crate) fn run_with_query(
+    pub(crate) fn run_with_query<'a>(
         &self,
-        tensors: [&TensorData; T],
+        tensors: impl IntoIterator<Item = &'a TensorData>,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
     ) {
+        let tensors = tensors.into_iter().collect::<Vec<_>>();
         let layout = tensors[0].layout();
         let shape = layout.shape();
         let max_blocksize = self.blocksize();

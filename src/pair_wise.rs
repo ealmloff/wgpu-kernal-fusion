@@ -37,8 +37,8 @@ pub(crate) struct UntypedPairWiseKernel {
     pre_element_wise: [UntypedElementWiseKernel; 2],
     function: PairWiseFunction,
     post_element_wise: UntypedElementWiseKernel,
-    dense_kernel: OnceLock<VisitTiledKernel<2>>,
-    sparse_kernel: OnceLock<VisitTiledKernel<2>>,
+    dense_kernel: OnceLock<VisitTiledKernel>,
+    sparse_kernel: OnceLock<VisitTiledKernel>,
     input_datatype: DataTypeEnum,
 }
 
@@ -95,8 +95,14 @@ impl UntypedPairWiseKernel {
                 rank as u32,
                 TILE_SIZE,
                 contiguous,
-                first.datatype(),
-                |kernel, [first_index, second_index], [first_tensor, out_tensor]| {
+                vec![first.datatype(), out.datatype()],
+                |kernel, indexes, tensors| {
+                    let [first_index, second_index] = indexes else {
+                        panic!("invalid number of tensors")
+                    };
+                    let [first_tensor, out_tensor] = tensors else {
+                        panic!("invalid number of tensors")
+                    };
                     let mut kernel_text = String::new();
                     let pre_element_wise_functions = pre_element_wise_functions.get_or_init(|| {
                         std::array::from_fn(|i| self.pre_element_wise[i].add_functions(kernel))

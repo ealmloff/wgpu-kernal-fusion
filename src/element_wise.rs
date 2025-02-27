@@ -11,6 +11,7 @@ use crate::{
     compute_graph::AnyComputeKey,
     kernel::{Function, GenericKernel},
     layout::TILE_SIZE,
+    padded_tensor_size,
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData},
     visit_tiled::VisitTiledKernel,
@@ -27,8 +28,8 @@ pub(crate) struct ElementWiseOperation {
 
 pub(crate) struct UntypedElementWiseKernel {
     functions: Vec<ElementWiseFunction>,
-    dense_kernel: OnceLock<VisitTiledKernel<1>>,
-    sparse_kernel: OnceLock<VisitTiledKernel<1>>,
+    dense_kernel: OnceLock<VisitTiledKernel>,
+    sparse_kernel: OnceLock<VisitTiledKernel>,
     input_datatype: DataTypeEnum,
 }
 
@@ -73,23 +74,39 @@ impl UntypedElementWiseKernel {
         tensor: &TensorData,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
-    ) {
+    ) -> Option<TensorData> {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
+        let output_type = self.functions.last().unwrap().datatype;
+        let requires_new_tensor = self.input_datatype != output_type;
 
         let functions = OnceLock::new();
         let create_kernel = || {
+            let mut datatypes = vec![tensor.datatype()];
+            if requires_new_tensor {
+                datatypes.push(output_type);
+            }
             VisitTiledKernel::new(
                 rank as u32,
                 TILE_SIZE,
                 contiguous,
-                tensor.datatype(),
-                |kernel, [index], [tensor]| {
-                    let result = functions
-                        .get_or_init(|| self.add_functions(kernel))
-                        .iter()
-                        .fold(format!("{tensor}[{index}]"), |acc, f| f.call(vec![acc]));
-                    format!("{tensor}[{index}] = {result};")
+                datatypes,
+                |kernel, indexes, tensors| match (indexes, tensors) {
+                    ([index], [tensor]) => {
+                        let result = functions
+                            .get_or_init(|| self.add_functions(kernel))
+                            .iter()
+                            .fold(format!("{tensor}[{index}]"), |acc, f| f.call(vec![acc]));
+                        format!("{tensor}[{index}] = {result};")
+                    }
+                    ([in_index, out_index], [tensor, output]) => {
+                        let result = functions
+                            .get_or_init(|| self.add_functions(kernel))
+                            .iter()
+                            .fold(format!("{tensor}[{in_index}]"), |acc, f| f.call(vec![acc]));
+                        format!("{output}[{out_index}] = {result};")
+                    }
+                    _ => panic!("invalid number of tensors"),
                 },
             )
         };
@@ -98,7 +115,34 @@ impl UntypedElementWiseKernel {
         } else {
             self.sparse_kernel.get_or_init(create_kernel)
         };
-        kernel.run_with_query([tensor], query, command_encoder);
+        let mut output = None;
+        let mut tensors = Vec::new();
+        tensors.push(tensor);
+        if requires_new_tensor {
+            let output_buf = tensor
+                .device()
+                .wgpu_device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size: padded_tensor_size(
+                        (tensor.layout().shape().iter().product::<usize>()
+                            * output_type.element_size()) as u64,
+                    ),
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+            let output_tensor = TensorData::new_from_buffer(
+                tensor.device(),
+                output_buf,
+                &tensor.layout().shape(),
+                output_type,
+            );
+            output = Some(output_tensor);
+            tensors.push(output.as_ref().unwrap());
+        }
+        kernel.run_with_query(tensors, query, command_encoder);
+
+        output
     }
 }
 
@@ -1101,6 +1145,31 @@ impl<const R: usize> CastTensor<R, half::f16> for Tensor<R, f32> {
     }
 }
 
+#[cfg(test)]
+#[tokio::test]
+async fn test_f32_to_f16_cast() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1.0f32, 2.0f32], [3.0f32, 4.0f32], [5.0f32, 6.0f32]];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor: Tensor<2, half::f16> = tensor.cast();
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], half::f16::from_f32(data[0][0]));
+    assert_eq!(output[[0, 1]], half::f16::from_f32(data[0][1]));
+    assert_eq!(output[[1, 0]], half::f16::from_f32(data[1][0]));
+    assert_eq!(output[[1, 1]], half::f16::from_f32(data[1][1]));
+    assert_eq!(output[[2, 0]], half::f16::from_f32(data[2][0]));
+    assert_eq!(output[[2, 1]], half::f16::from_f32(data[2][1]));
+}
+
 impl<const R: usize> CastTensor<R, f32> for Tensor<R, half::f16> {
     fn cast(&self) -> Tensor<R, f32> {
         self.element_wise(ElementWiseOperation {
@@ -1109,4 +1178,33 @@ impl<const R: usize> CastTensor<R, f32> for Tensor<R, half::f16> {
                 .with_name("abs"),
         })
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_f16_to_f32_cast() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [
+        [half::f16::from_f32(1.0), half::f16::from_f32(2.0)],
+        [half::f16::from_f32(3.0), half::f16::from_f32(4.0)],
+        [half::f16::from_f32(5.0), half::f16::from_f32(6.0)],
+    ];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor: Tensor<2, f32> = tensor.cast();
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], data[0][0].to_f32());
+    assert_eq!(output[[0, 1]], data[0][1].to_f32());
+    assert_eq!(output[[1, 0]], data[1][0].to_f32());
+    assert_eq!(output[[1, 1]], data[1][1].to_f32());
+    assert_eq!(output[[2, 0]], data[2][0].to_f32());
+    assert_eq!(output[[2, 1]], data[2][1].to_f32());
 }

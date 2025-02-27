@@ -265,8 +265,9 @@ impl ComputeGraphInner {
         } else {
             let input = self.resolve(input, &mut *command_encoder);
             let kernel = UntypedElementWiseKernel::new(functions, input.datatype());
-            kernel.run_with_query(&input, None, command_encoder);
-            input
+            kernel
+                .run_with_query(&input, None, command_encoder)
+                .unwrap_or(input)
         }
     }
 
