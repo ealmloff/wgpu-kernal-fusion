@@ -132,13 +132,12 @@ impl VisitTiledKernel {
             }
             writeln!(&mut kernel_body, "true {{").unwrap();
             for (index, tensor) in tensors.iter().enumerate() {
-                let offset = tensor.offset_binding();
-                write!(&mut kernel_body, "let index_{index} = {offset} + ").unwrap();
-                for i in 0..rank {
-                    let stride = tensor.stride_binding(i);
-                    write!(&mut kernel_body, "{stride} * merged_index_{i} + ").unwrap();
-                }
-                writeln!(&mut kernel_body, "0;").unwrap();
+                writeln!(
+                    &mut kernel_body,
+                    "let index_{index} = {};",
+                    tensor.strided_index((0..).map(|i| format!("merged_index_{i}")))
+                )
+                .unwrap();
             }
             let indexes = (0..datatypes.len())
                 .map(|i| format!("index_{i}"))

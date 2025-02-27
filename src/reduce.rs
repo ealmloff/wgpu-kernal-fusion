@@ -118,18 +118,6 @@ impl UntypedReduceKernel {
             "var workgroup_index_remainder = {workgroup_index};"
         )
         .unwrap();
-        writeln!(
-            &mut kernel_body,
-            "var in_start_offset = {};",
-            input_tensor.strided_index((0..).map(|i| format!("index_{i}")))
-        )
-        .unwrap();
-        writeln!(
-            &mut kernel_body,
-            "var out_start_offset = {};",
-            output_tensor.strided_index((0..).map(|i| format!("index_{i}")))
-        )
-        .unwrap();
         for i in 0..output_rank {
             let out_shape_i = output_tensor.shape_binding(i);
             writeln!(
@@ -143,6 +131,18 @@ impl UntypedReduceKernel {
             )
             .unwrap();
         }
+        writeln!(
+            &mut kernel_body,
+            "var in_start_offset = {};",
+            input_tensor.strided_index((0..).map(|i| format!("index_{i}")))
+        )
+        .unwrap();
+        writeln!(
+            &mut kernel_body,
+            "var out_start_offset = {};",
+            output_tensor.strided_index((0..).map(|i| format!("index_{i}")))
+        )
+        .unwrap();
         writeln!(&mut kernel_body).unwrap();
 
         writeln!(

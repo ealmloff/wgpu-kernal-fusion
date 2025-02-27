@@ -769,8 +769,8 @@ impl TensorInput {
     pub(crate) fn strided_index(&self, indexes: impl IntoIterator<Item = String>) -> String {
         let mut output = String::new();
         let offset = self.offset_binding();
-        output.push_str(&format!("let index = {offset} + "));
-        for (i, index) in indexes.into_iter().enumerate() {
+        output.push_str(&format!("{offset} + "));
+        for (i, index) in indexes.into_iter().enumerate().take(self.rank as usize) {
             let stride = self.stride_binding(i as u32);
             output.push_str(&format!("{index}*{stride} + "));
         }
