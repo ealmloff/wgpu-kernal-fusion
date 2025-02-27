@@ -766,18 +766,52 @@ impl TensorInput {
         format!("i_{}", self.get_shape_binding(rank))
     }
 
-    pub(crate) fn strided_index(&self, indexes: impl IntoIterator<Item = String>) -> String {
-        let mut output = String::new();
+    pub(crate) fn check_bounds(
+        &self,
+        write: &mut String,
+        indexes: impl IntoIterator<Item = String>,
+        in_bounds: impl FnOnce(&mut String),
+    ) {
+        write!(write, "if true ").unwrap();
+        for (i, index) in indexes.into_iter().enumerate().take(self.rank as usize) {
+            let stride = self.shape_binding(i as u32);
+            write!(write, "&& {index} < {stride} ").unwrap();
+        }
+        write!(write, "{{").unwrap();
+        in_bounds(write);
+        write!(write, "}}").unwrap();
+    }
+
+    pub(crate) fn check_bounds_contiguous(
+        &self,
+        write: &mut String,
+        contiguous_index: String,
+        in_bounds: impl FnOnce(&mut String),
+    ) {
+        write!(write, "if {contiguous_index} < 1 ").unwrap();
+        for i in 0..self.rank {
+            let stride = self.shape_binding(i);
+            write!(write, "* {stride} ").unwrap();
+        }
+        write!(write, "{{").unwrap();
+        in_bounds(write);
+        write!(write, "}}").unwrap();
+    }
+
+    pub(crate) fn strided_index(
+        &self,
+        write: &mut String,
+        indexes: impl IntoIterator<Item = String>,
+    ) {
         let offset = self.offset_binding();
-        output.push_str(&format!("{offset} + "));
+        write!(write, "{offset} + ").unwrap();
         for (i, index) in indexes.into_iter().enumerate().take(self.rank as usize) {
             let stride = self.stride_binding(i as u32);
-            output.push_str(&format!("{index}*{stride} + "));
+            write!(write, "{index}*{stride} + ").unwrap();
         }
         for _ in 0..3 {
-            output.pop();
+            write.pop();
         }
-        output
     }
 }
 

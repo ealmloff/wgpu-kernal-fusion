@@ -83,31 +83,27 @@ impl VisitTiledKernel {
                 let index = format!("index_{local_index}");
                 writeln!(
                     &mut kernel_body,
-                    "\t\tlet {index} = {global_id}.x * {tile_size} + {local_index};"
+                    "let {index} = {global_id}.x * {tile_size} + {local_index};"
                 )
                 .unwrap();
-                write!(&mut kernel_body, "\t\tif {index} < ").unwrap();
-                for i in 0..rank {
-                    let shape = tensors[0].shape_binding(i);
-                    write!(&mut kernel_body, "{shape}").unwrap();
-                    if i < rank - 1 {
-                        write!(&mut kernel_body, " * ").unwrap();
-                    }
-                }
-                writeln!(&mut kernel_body, " {{").unwrap();
-                let indexes = (0..datatypes.len())
-                    .map(|_| index.clone())
-                    .collect::<Vec<_>>();
-                let modify_data = modify_data(&mut kernel, &indexes, &tensors);
-                writeln!(&mut kernel_body, "{modify_data}").unwrap();
-                writeln!(&mut kernel_body, "}}").unwrap();
+                tensors[0].check_bounds_contiguous(
+                    &mut kernel_body,
+                    index.clone(),
+                    |kernel_body| {
+                        let indexes = (0..datatypes.len())
+                            .map(|_| index.clone())
+                            .collect::<Vec<_>>();
+                        let modify_data = modify_data(&mut kernel, &indexes, &tensors);
+                        writeln!(kernel_body, "{modify_data}").unwrap();
+                    },
+                );
             }
         } else {
             for i in 0..rank as usize {
                 let index = ["x", "y", "z"][i];
                 writeln!(
                     &mut kernel_body,
-                    "\tlet tile_index_{i} = {global_id}.{index} * {tile_size};"
+                    "let tile_index_{i} = {global_id}.{index} * {tile_size};"
                 )
                 .unwrap();
             }
@@ -125,27 +121,23 @@ impl VisitTiledKernel {
                 .unwrap();
             }
 
-            write!(&mut kernel_body, "if ").unwrap();
-            for i in 0..rank {
-                let shape = tensors[0].shape_binding(i);
-                write!(&mut kernel_body, "merged_index_{i} < {shape} && ").unwrap();
-            }
-            writeln!(&mut kernel_body, "true {{").unwrap();
-            for (index, tensor) in tensors.iter().enumerate() {
-                writeln!(
-                    &mut kernel_body,
-                    "let index_{index} = {};",
-                    tensor.strided_index((0..).map(|i| format!("merged_index_{i}")))
-                )
-                .unwrap();
-            }
-            let indexes = (0..datatypes.len())
-                .map(|i| format!("index_{i}"))
-                .collect::<Vec<_>>();
-            let modify_data = modify_data(&mut kernel, &indexes, &tensors);
-            writeln!(&mut kernel_body, "{modify_data}").unwrap();
-
-            writeln!(&mut kernel_body, "}}").unwrap();
+            tensors[0].check_bounds(
+                &mut kernel_body,
+                (0..).map(|i| format!("merged_index_{i}")),
+                |kernel_body| {
+                    for (index, tensor) in tensors.iter().enumerate() {
+                        writeln!(kernel_body, "let index_{index} = ",).unwrap();
+                        tensor
+                            .strided_index(kernel_body, (0..).map(|i| format!("merged_index_{i}")));
+                        writeln!(kernel_body, ";").unwrap();
+                    }
+                    let indexes = (0..datatypes.len())
+                        .map(|i| format!("index_{i}"))
+                        .collect::<Vec<_>>();
+                    let modify_data = modify_data(&mut kernel, &indexes, &tensors);
+                    writeln!(kernel_body, "{modify_data}").unwrap();
+                },
+            );
 
             for _ in 0..rank {
                 writeln!(&mut kernel_body, "}}").unwrap();

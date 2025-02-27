@@ -131,18 +131,12 @@ impl UntypedReduceKernel {
             )
             .unwrap();
         }
-        writeln!(
-            &mut kernel_body,
-            "var in_start_offset = {};",
-            input_tensor.strided_index((0..).map(|i| format!("index_{i}")))
-        )
-        .unwrap();
-        writeln!(
-            &mut kernel_body,
-            "var out_start_offset = {};",
-            output_tensor.strided_index((0..).map(|i| format!("index_{i}")))
-        )
-        .unwrap();
+        writeln!(&mut kernel_body, "var in_start_offset = ",).unwrap();
+        input_tensor.strided_index(&mut kernel_body, (0..).map(|i| format!("index_{i}")));
+        writeln!(&mut kernel_body, ";").unwrap();
+        writeln!(&mut kernel_body, "var out_start_offset = ",).unwrap();
+        output_tensor.strided_index(&mut kernel_body, (0..).map(|i| format!("index_{i}")));
+        writeln!(&mut kernel_body, ";").unwrap();
         writeln!(&mut kernel_body).unwrap();
 
         writeln!(
