@@ -98,11 +98,8 @@ impl UntypedReduceKernel {
         let output_tensor = kernel.add_tensor_input(output_rank, true, out_datatype);
         let reduce_size = kernel.add_integer_input();
         let reduce_stride = kernel.add_integer_input();
-        let local_data = kernel.add_global_array(
-            KernelGlobalSpace::Workgroup,
-            dtype,
-            blocksize.to_string(),
-        );
+        let local_data =
+            kernel.add_global_array(KernelGlobalSpace::Workgroup, dtype, blocksize.to_string());
         let reduce = self.add_function(&mut kernel);
         let pre_element_wise = self.add_pre_element_wise_functions(&mut kernel);
         let post_element_wise = self.add_post_element_wise_functions(&mut kernel);
