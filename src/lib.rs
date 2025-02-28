@@ -21,3 +21,4 @@ mod reduce;
 mod slice;
 mod tensor;
 mod visit_tiled;
+mod composite;

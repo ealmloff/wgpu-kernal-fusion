@@ -14,7 +14,7 @@ use crate::{
 use tabbycat::Graph;
 use tabbycat::{Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ElementWiseComputeNodeKey(usize);
 impl ElementWiseComputeNodeKey {
     fn new() -> Self {
@@ -23,7 +23,7 @@ impl ElementWiseComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct PairWiseComputeNodeKey(usize);
 impl PairWiseComputeNodeKey {
     fn new() -> Self {
@@ -32,7 +32,7 @@ impl PairWiseComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct MatMulComputeNodeKey(usize);
 impl MatMulComputeNodeKey {
     fn new() -> Self {
@@ -41,7 +41,7 @@ impl MatMulComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ReduceComputeNodeKey(usize);
 impl ReduceComputeNodeKey {
     fn new() -> Self {
@@ -50,7 +50,7 @@ impl ReduceComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct SliceComputeNodeKey(usize);
 impl SliceComputeNodeKey {
     fn new() -> Self {
@@ -59,7 +59,7 @@ impl SliceComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct TensorComputeNodeKey(usize);
 impl TensorComputeNodeKey {
     fn new() -> Self {
@@ -68,7 +68,7 @@ impl TensorComputeNodeKey {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum AnyComputeKey {
     ElementWiseComputeNodeKey(ElementWiseComputeNodeKey),
     PairWiseComputeNodeKey(PairWiseComputeNodeKey),
@@ -131,6 +131,9 @@ impl ComputeGraph {
     }
 
     pub(crate) fn merge(&self, other: &Self) {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return;
+        }
         self.with_mut(|inner| {
             other.with_mut(|other_inner| {
                 inner.element_wise.extend(other_inner.element_wise.drain());

@@ -3,6 +3,7 @@
 This is a WGPU ML runtime with kernel fusion for ergonomic high performance custom operations. This will hopefully serve as the web and amd runtime for [kalosm](https://crates.io/crates/kalosm) once it is stable enough.
 
 TODO:
+
 - [x] Elementwise ops
 - [x] Fuse Elementwise ops together
 - [x] MatMul
@@ -16,6 +17,26 @@ TODO:
 - [ ] Fuse PairWise ops together?
 - [ ] Fuse parallel Reduce ops?
 - [ ] Dynamically apply fusion based on runtime throughput data
+
+Llama Op Requirements:
+
+- [ ] RmsNorm
+- [ ] Matmul
+- [ ] Rope
+- [ ] Unqueeze
+- [ ] Cat
+- [ ] Reshape
+- [ ] Transpose
+- [ ] Softmax last dim
+- [ ] sdpa
+- [ ] narraw
+- [ ] broadcast add
+- [x] silu
+- [ ] arange
+- [x] sin
+- [x] cos
+- [ ] rotary_emb::rope
+- [ ] rotary_emb::rope_i
 
 ## Resources
 

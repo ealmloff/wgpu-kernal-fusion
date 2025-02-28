@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    ops::{Add, Div, Mul, Sub},
+    ops::{Add, Div, Mul, Neg, Sub},
     sync::OnceLock,
 };
 
@@ -244,6 +244,67 @@ async fn test_add_const() {
     assert_eq!(output[[1]], 3.);
 }
 
+impl<const R: usize, T: DataType> Add<Tensor<R, T>> for f32 {
+    type Output = Tensor<R, T>;
+
+    fn add(self, rhs: Tensor<R, T>) -> Self::Output {
+        rhs + self
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_add_const_reversed() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+
+    let data = [
+        [[1., 2.], [1., 2.]],
+        [[3., 4.], [3., 4.]],
+        [[5., 6.], [5., 6.]],
+    ];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 1.0 + tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    let result = [
+        [[2.0, 3.0], [2.0, 3.0]],
+        [[4.0, 5.0], [4.0, 5.0]],
+        [[6.0, 7.0], [6.0, 7.0]],
+    ];
+    let result = Tensor::new(&device, &result);
+    assert_eq!(output, result.as_slice().await.unwrap());
+
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 1.0 + tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    assert_eq!(output[[0, 0]], 2.);
+    assert_eq!(output[[0, 1]], 3.);
+    assert_eq!(output[[1, 0]], 4.);
+    assert_eq!(output[[1, 1]], 5.);
+    assert_eq!(output[[2, 0]], 6.);
+    assert_eq!(output[[2, 1]], 7.);
+
+    let data = [1., 2.];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 1.0 + tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    assert_eq!(output[[0]], 2.);
+    assert_eq!(output[[1]], 3.);
+}
+
 #[cfg(test)]
 #[tokio::test]
 async fn test_add_const_f16() {
@@ -403,6 +464,46 @@ async fn test_sub_const() {
     assert_eq!(output[[2, 1]], 5.);
 }
 
+impl<const R: usize, T: DataType> Sub<Tensor<R, T>> for f32 {
+    type Output = Tensor<R, T>;
+
+    fn sub(self, rhs: Tensor<R, T>) -> Self::Output {
+        rhs.element_wise(ElementWiseOperation {
+            value: rhs.key(),
+            function: ElementWiseFunction::new(
+                format!("let output = {self} - input;"),
+                T::WGSL_TYPE,
+            )
+            .with_name("subtract_const"),
+        })
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_sub_const_reversed() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 6.0 - tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], 5.);
+    assert_eq!(output[[0, 1]], 4.);
+    assert_eq!(output[[1, 0]], 3.);
+    assert_eq!(output[[1, 1]], 2.);
+    assert_eq!(output[[2, 0]], 1.);
+    assert_eq!(output[[2, 1]], 0.);
+}
+
 impl<const R: usize, T: DataType> Mul<f32> for Tensor<R, T> {
     type Output = Tensor<R, T>;
 
@@ -432,6 +533,39 @@ async fn test_mul_const() {
     let tensor = Tensor::new(&device, &data);
 
     let tensor = tensor * 2.0;
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], 2.);
+    assert_eq!(output[[0, 1]], 4.);
+    assert_eq!(output[[1, 0]], 6.);
+    assert_eq!(output[[1, 1]], 8.);
+    assert_eq!(output[[2, 0]], 10.);
+    assert_eq!(output[[2, 1]], 12.);
+}
+
+impl<const R: usize, T: DataType> Mul<Tensor<R, T>> for f32 {
+    type Output = Tensor<R, T>;
+
+    fn mul(self, rhs: Tensor<R, T>) -> Self::Output {
+        rhs * self
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_mul_const_reversed() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 2.0 * tensor;
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
@@ -481,6 +615,46 @@ async fn test_div_const() {
     assert_eq!(output[[1, 1]], 2.);
     assert_eq!(output[[2, 0]], 2.5);
     assert_eq!(output[[2, 1]], 3.);
+}
+
+impl<const R: usize, T: DataType> Div<Tensor<R, T>> for f32 {
+    type Output = Tensor<R, T>;
+
+    fn div(self, rhs: Tensor<R, T>) -> Self::Output {
+        rhs.element_wise(ElementWiseOperation {
+            value: rhs.key(),
+            function: ElementWiseFunction::new(
+                format!("let output = {} / input;", self),
+                T::WGSL_TYPE,
+            )
+            .with_name("divide_const"),
+        })
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_div_const_reversed() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = 6.0 / tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert_eq!(output[[0, 0]], 6.0 / data[0][0]);
+    assert_eq!(output[[0, 1]], 6.0 / data[0][1]);
+    assert_eq!(output[[1, 0]], 6.0 / data[1][0]);
+    assert_eq!(output[[1, 1]], 6.0 / data[1][1]);
+    assert_eq!(output[[2, 0]], 6.0 / data[2][0]);
+    assert_eq!(output[[2, 1]], 6.0 / data[2][1]);
 }
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
@@ -1132,6 +1306,44 @@ async fn test_abs() {
     assert!((output[[1, 1]] - data[1][1].abs()).abs() < 0.001);
     assert!((output[[2, 0]] - data[2][0].abs()).abs() < 0.001);
     assert!((output[[2, 1]] - data[2][1].abs()).abs() < 0.001);
+}
+
+impl<const R: usize, D: DataType> Neg for Tensor<R, D> {
+    type Output = Tensor<R, D>;
+
+    fn neg(self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("let output = -input;", D::WGSL_TYPE)
+                .with_name("abs"),
+        })
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_neg() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., -2.], [-3., 4.], [5., -6.]];
+
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = -tensor;
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert!((output[[0, 0]] + data[0][0]).abs() < 0.001);
+    assert!((output[[0, 1]] + data[0][1]).abs() < 0.001);
+    assert!((output[[1, 0]] + data[1][0]).abs() < 0.001);
+    assert!((output[[1, 1]] + data[1][1]).abs() < 0.001);
+    assert!((output[[2, 0]] + data[2][0]).abs() < 0.001);
+    assert!((output[[2, 1]] + data[2][1]).abs() < 0.001);
 }
 
 pub trait CastTensor<const R: usize, T> {
