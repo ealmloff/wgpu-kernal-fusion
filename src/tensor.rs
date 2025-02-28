@@ -63,6 +63,26 @@ pub(crate) struct TensorInfo {
     datatype: DataTypeEnum,
 }
 
+impl Display for TensorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {}", self.layout.shape(), self.datatype)
+    }
+}
+
+impl TensorInfo {
+    pub(crate) fn new(layout: Layout, datatype: DataTypeEnum) -> Self {
+        Self { layout, datatype }
+    }
+
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub(crate) fn datatype(&self) -> DataTypeEnum {
+        self.datatype
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct LazyTensorData {
     device: Device,
@@ -219,7 +239,7 @@ impl TensorData {
             let buffer = device.wgpu_device().create_buffer(&wgt_descriptor);
             (buffer, size)
         }
-        let (buffer, unpadded_size) = create_aligned_buffer(size_of::<D>() as u64, &shape, device);
+        let (buffer, unpadded_size) = create_aligned_buffer(size_of::<D>() as u64, shape, device);
 
         buffer.slice(..).get_mapped_range_mut()[..unpadded_size as usize]
             .iter_mut()
@@ -227,7 +247,7 @@ impl TensorData {
             .for_each(|(dst, src)| *dst = *src);
         buffer.unmap();
 
-        Self::new_from_buffer(device, buffer, &shape, D::WGSL_TYPE)
+        Self::new_from_buffer(device, buffer, shape, D::WGSL_TYPE)
     }
 
     pub fn slice(&self, ranges: &[Range<usize>]) -> Self {
@@ -256,6 +276,10 @@ impl TensorData {
 
     pub(crate) fn buffer(&self) -> &Arc<wgpu::Buffer> {
         &self.buffer
+    }
+
+    pub(crate) fn info(&self) -> &TensorInfo {
+        &self.info
     }
 }
 
@@ -556,8 +580,8 @@ pub(crate) fn padded_tensor_size(size: u64) -> u64 {
     // 2. buffer size must be greater than 0.
     // Therefore we round the value up to the nearest multiple, and ensure it's at least COPY_BUFFER_ALIGNMENT.
     let align_mask = COPY_BUFFER_ALIGNMENT - 1;
-    let padded_size = ((size + align_mask) & !align_mask).max(COPY_BUFFER_ALIGNMENT);
-    padded_size
+
+    ((size + align_mask) & !align_mask).max(COPY_BUFFER_ALIGNMENT)
 }
 
 #[cfg(test)]

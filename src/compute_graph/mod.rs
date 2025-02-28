@@ -4,16 +4,15 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use wgpu::CommandEncoder;
 
 mod layout_pass;
 mod resolve;
+mod visit;
 mod visualize;
 
 use crate::{
-    Device, ElementWiseFunction, ElementWiseOperation, MatMulOperation, PairWiseOperation,
-    ReduceOperation, UntypedElementWiseKernel, UntypedPairWiseKernel, UntypedReduceKernel,
-    element_wise, matmul::UntypedMatMul, slice::SliceOperation, tensor::TensorData,
+    Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
+    slice::SliceOperation, tensor::TensorData,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -129,7 +128,7 @@ impl ComputeGraph {
     fn with_mut<R, F: FnOnce(&mut ComputeGraphInner) -> R>(&self, f: F) -> R {
         let write = self.inner.load();
         let mut inner = write.write().unwrap();
-        f(&mut *inner)
+        f(&mut inner)
     }
 
     pub(crate) fn merge(&self, other: &Self) {

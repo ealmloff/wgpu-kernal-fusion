@@ -138,7 +138,7 @@ impl UntypedElementWiseKernel {
             let output_tensor = TensorData::new_from_buffer(
                 tensor.device(),
                 output_buf,
-                &tensor.layout().shape(),
+                tensor.layout().shape(),
                 output_type,
             );
             output = Some(output_tensor);

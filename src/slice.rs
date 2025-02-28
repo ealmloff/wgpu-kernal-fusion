@@ -4,7 +4,7 @@ use crate::{DataType, Tensor, TensorData, compute_graph::AnyComputeKey};
 
 pub(crate) struct SliceOperation {
     pub(crate) input: AnyComputeKey,
-    slice: Slice,
+    pub(crate) slice: Slice,
 }
 
 impl SliceOperation {
@@ -18,7 +18,7 @@ impl SliceOperation {
 }
 
 pub(crate) struct Slice {
-    slices: Box<[Range<usize>]>,
+    pub(crate) slices: Box<[Range<usize>]>,
 }
 
 impl<const R: usize, T: DataType> Tensor<R, T> {

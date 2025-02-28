@@ -153,7 +153,7 @@ impl UntypedMatMul {
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: None,
                     layout: Some(&compute_pipeline_layout),
-                    module: &module,
+                    module,
                     entry_point: Some("main"),
                     cache: None,
                     compilation_options: PipelineCompilationOptions::default(),

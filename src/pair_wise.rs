@@ -173,7 +173,7 @@ impl<const R: usize, T: DataType> Add<&Tensor<R, T>> for &Tensor<R, T> {
     fn add(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
             rhs,
-            PairWiseFunction::new(format!("let output = a + b;"), T::WGSL_TYPE).with_name("add"),
+            PairWiseFunction::new("let output = a + b;".to_string(), T::WGSL_TYPE).with_name("add"),
         )
     }
 }
@@ -336,7 +336,7 @@ impl<const R: usize, T: DataType> Sub<&Tensor<R, T>> for &Tensor<R, T> {
     fn sub(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
             rhs,
-            PairWiseFunction::new(format!("let output = a - b;"), T::WGSL_TYPE).with_name("sub"),
+            PairWiseFunction::new("let output = a - b;".to_string(), T::WGSL_TYPE).with_name("sub"),
         )
     }
 }
@@ -376,7 +376,7 @@ impl<const R: usize, T: DataType> Mul<&Tensor<R, T>> for &Tensor<R, T> {
     fn mul(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
             rhs,
-            PairWiseFunction::new(format!("let output = a * b;"), T::WGSL_TYPE).with_name("mul"),
+            PairWiseFunction::new("let output = a * b;".to_string(), T::WGSL_TYPE).with_name("mul"),
         )
     }
 }
@@ -416,7 +416,7 @@ impl<const R: usize, T: DataType> Div<&Tensor<R, T>> for &Tensor<R, T> {
     fn div(self, rhs: &Tensor<R, T>) -> Self::Output {
         self.pair_wise(
             rhs,
-            PairWiseFunction::new(format!("let output = a / b;"), T::WGSL_TYPE).with_name("div"),
+            PairWiseFunction::new("let output = a / b;".to_string(), T::WGSL_TYPE).with_name("div"),
         )
     }
 }
@@ -454,7 +454,7 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn pow(&self, other: &Self) -> Self {
         self.pair_wise(
             other,
-            PairWiseFunction::new(format!("let output = pow(a, b);"), T::WGSL_TYPE)
+            PairWiseFunction::new("let output = pow(a, b);".to_string(), T::WGSL_TYPE)
                 .with_name("pow"),
         )
     }

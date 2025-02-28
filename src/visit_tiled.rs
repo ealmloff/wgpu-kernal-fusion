@@ -66,7 +66,7 @@ impl VisitTiledKernel {
         tile_size: u32,
         contiguous: bool,
         datatypes: Vec<DataTypeEnum>,
-        mut kernel: &mut GenericKernel,
+        kernel: &mut GenericKernel,
         mut modify_data: impl FnMut(&mut GenericKernel, &[String], &[TensorInput]) -> String,
     ) -> String {
         assert!(rank <= 3, "TensorLayout only supports up to 3 rank tensors");
@@ -93,7 +93,7 @@ impl VisitTiledKernel {
                         let indexes = (0..datatypes.len())
                             .map(|_| index.clone())
                             .collect::<Vec<_>>();
-                        let modify_data = modify_data(&mut kernel, &indexes, &tensors);
+                        let modify_data = modify_data(kernel, &indexes, &tensors);
                         writeln!(kernel_body, "{modify_data}").unwrap();
                     },
                 );
@@ -134,7 +134,7 @@ impl VisitTiledKernel {
                     let indexes = (0..datatypes.len())
                         .map(|i| format!("index_{i}"))
                         .collect::<Vec<_>>();
-                    let modify_data = modify_data(&mut kernel, &indexes, &tensors);
+                    let modify_data = modify_data(kernel, &indexes, &tensors);
                     writeln!(kernel_body, "{modify_data}").unwrap();
                 },
             );

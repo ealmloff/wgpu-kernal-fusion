@@ -6,7 +6,7 @@ use wgpu::{BindGroupLayout, CommandEncoder, PipelineCompilationOptions, util::De
 use crate::{DataTypeEnum, Device, PerformanceQueries, TensorData};
 
 #[derive(EnumSetType, Debug)]
-pub enum EnabledBuiltins {
+pub(crate) enum EnabledBuiltins {
     GlobalId,
     SubgroupSize,
     WorkgroupIndex,
@@ -254,8 +254,6 @@ impl GenericKernel {
             }
         }
 
-        println!("entries: {:#?}", entries);
-
         device
             .wgpu_device()
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -332,34 +330,28 @@ impl GenericKernel {
                     // Tensor offset
                     owned_entries.push((
                         tensor_input.get_offset_binding(),
-                        create_u32_buffer(&device, tensor.layout().offset() as u32),
+                        create_u32_buffer(device, tensor.layout().offset() as u32),
                     ));
                     // Tensor strides
                     for i in 0..tensor_input.rank {
                         owned_entries.push((
                             tensor_input.get_stride_binding(i),
-                            create_u32_buffer(
-                                &device,
-                                tensor.layout().strides()[i as usize] as u32,
-                            ),
+                            create_u32_buffer(device, tensor.layout().strides()[i as usize] as u32),
                         ));
                     }
                     // Tensor size
                     for i in 0..tensor_input.rank {
                         owned_entries.push((
                             tensor_input.get_shape_binding(i),
-                            create_u32_buffer(&device, tensor.layout().shape()[i as usize] as u32),
+                            create_u32_buffer(device, tensor.layout().shape()[i as usize] as u32),
                         ));
                     }
                 }
                 (KernelInputType::Integer(integer_input), KernelInputValue::Integer(value)) => {
-                    owned_entries.push((
-                        integer_input.index,
-                        create_u32_buffer(&device, *value as u32),
-                    ));
+                    owned_entries.push((integer_input.index, create_u32_buffer(device, *value)));
                 }
                 (KernelInputType::Float(float_input), KernelInputValue::Float(value)) => {
-                    owned_entries.push((float_input.index, create_f32_buffer(&device, *value)));
+                    owned_entries.push((float_input.index, create_f32_buffer(device, *value)));
                 }
                 _ => todo!(),
             }
@@ -508,8 +500,6 @@ impl GenericKernel {
         }
         writeln!(f, "{}", self.body)?;
         writeln!(f, "}}")?;
-
-        println!("{}", f);
 
         Ok(())
     }

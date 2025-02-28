@@ -117,11 +117,11 @@ impl PerformanceQueries {
         let next_unused_query = self
             .next_unused_query
             .fetch_add(2, std::sync::atomic::Ordering::SeqCst);
-        let writes = wgpu::ComputePassTimestampWrites {
+
+        wgpu::ComputePassTimestampWrites {
             query_set: &self.set,
             beginning_of_pass_write_index: Some(next_unused_query),
             end_of_pass_write_index: Some(next_unused_query + 1),
-        };
-        writes
+        }
     }
 }
