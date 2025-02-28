@@ -9,6 +9,7 @@ pub(crate) use matmul::*;
 pub(crate) use pair_wise::*;
 pub(crate) use reduce::*;
 
+mod composite;
 mod compute_graph;
 mod device;
 mod element_wise;
@@ -21,4 +22,3 @@ mod reduce;
 mod slice;
 mod tensor;
 mod visit_tiled;
-mod composite;
