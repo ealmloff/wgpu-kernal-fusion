@@ -1363,15 +1363,24 @@ async fn test_neg() {
     assert!((output[[2, 1]] + data[2][1]).abs() < 0.001);
 }
 
-pub trait CastTensor<const R: usize, T> {
-    /// Casts the tensor to another type
-    fn cast(&self) -> Tensor<R, T>;
+impl<const R: usize, T> Tensor<R, T> {
+    pub fn cast<T2>(self) -> Tensor<R, T2>
+    where
+        T: CastTensor<T2>,
+    {
+        T::cast(self)
+    }
 }
 
-impl<const R: usize> CastTensor<R, half::f16> for Tensor<R, f32> {
-    fn cast(&self) -> Tensor<R, half::f16> {
-        self.element_wise(ElementWiseOperation {
-            value: self.key(),
+pub trait CastTensor<T>: Sized {
+    /// Casts the tensor to another type
+    fn cast<const R: usize>(tensor: Tensor<R, Self>) -> Tensor<R, T>;
+}
+
+impl CastTensor<half::f16> for f32 {
+    fn cast<const R: usize>(tensor: Tensor<R, Self>) -> Tensor<R, half::f16> {
+        tensor.element_wise(ElementWiseOperation {
+            value: tensor.key(),
             function: ElementWiseFunction::new("let output = f16(input);", DataTypeEnum::F16)
                 .with_name("cast"),
         })
@@ -1403,12 +1412,12 @@ async fn test_f32_to_f16_cast() {
     assert_eq!(output[[2, 1]], half::f16::from_f32(data[2][1]));
 }
 
-impl<const R: usize> CastTensor<R, f32> for Tensor<R, half::f16> {
-    fn cast(&self) -> Tensor<R, f32> {
-        self.element_wise(ElementWiseOperation {
-            value: self.key(),
+impl CastTensor<f32> for half::f16 {
+    fn cast<const R: usize>(tensor: Tensor<R, Self>) -> Tensor<R, f32> {
+        tensor.element_wise(ElementWiseOperation {
+            value: tensor.key(),
             function: ElementWiseFunction::new("let output = f32(input);", DataTypeEnum::F32)
-                .with_name("abs"),
+                .with_name("cast"),
         })
     }
 }

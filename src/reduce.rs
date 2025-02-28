@@ -67,11 +67,11 @@ impl UntypedReduceKernel {
 
     pub fn add_function(&self, kernel: &mut GenericKernel) -> Function {
         kernel.add_function(
-            self.datatype,
+            self.reduce.datatype(),
             self.reduce.operation.clone(),
             [
-                ("a".to_string(), self.datatype.to_string()),
-                ("b".to_string(), self.datatype.to_string()),
+                ("a".to_string(), self.reduce.datatype().to_string()),
+                ("b".to_string(), self.reduce.datatype().to_string()),
             ],
         )
     }
@@ -81,7 +81,7 @@ impl UntypedReduceKernel {
     }
 
     fn tiled_map(&self, blocksize: u32, input_rank: u32) -> GenericKernel {
-        let dtype = self.datatype;
+        let dtype = self.reduce.datatype();
         let out_datatype = self.out_datatype();
         let mut kernel = GenericKernel::new();
         let output_rank = input_rank - 1;
@@ -92,7 +92,7 @@ impl UntypedReduceKernel {
         // We also can't synchronize among workgroups without atomics. storageBarrier() is a barrier for
         // the storage memory only inside the workgroup.
         // This kernel just uses one workgroup per reduction unit like the MLX kernel
-        let input_tensor = kernel.add_tensor_input(output_rank, false, dtype);
+        let input_tensor = kernel.add_tensor_input(output_rank, false, self.datatype);
         let output_tensor = kernel.add_tensor_input(output_rank, true, out_datatype);
         let reduce_size = kernel.add_integer_input();
         let reduce_stride = kernel.add_integer_input();
@@ -391,14 +391,16 @@ pub struct ReduceFunction {
     name: Option<String>,
     operation: String,
     initial_value: String,
+    datatype: DataTypeEnum,
 }
 
 impl ReduceFunction {
-    fn new(operation: impl Display, initial_value: impl Display) -> Self {
+    fn new(operation: impl Display, initial_value: impl Display, datatype: DataTypeEnum) -> Self {
         Self {
             name: None,
             operation: operation.to_string(),
             initial_value: initial_value.to_string(),
+            datatype,
         }
     }
 
@@ -410,12 +412,17 @@ impl ReduceFunction {
         self.name = Some(name.to_string());
         self
     }
+
+    pub(crate) fn datatype(&self) -> DataTypeEnum {
+        self.datatype
+    }
 }
 
 impl<D: DataType> Tensor<2, D> {
     pub fn sum(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
-            ReduceFunction::new("let output = a + b;".to_string(), "0.0").with_name("sum"),
+            ReduceFunction::new("let output = a + b;".to_string(), "0.0", D::WGSL_TYPE)
+                .with_name("sum"),
             dim,
         )
     }
@@ -586,8 +593,12 @@ async fn test_reduce_const_sum_then_add_fused() {
 impl<D: DataType> Tensor<2, D> {
     pub fn max(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
-            ReduceFunction::new("let output = max(a, b);".to_string(), "-3.40282e+38")
-                .with_name("max"),
+            ReduceFunction::new(
+                "let output = max(a, b);".to_string(),
+                "-3.40282e+38",
+                D::WGSL_TYPE,
+            )
+            .with_name("max"),
             dim,
         )
     }
@@ -627,8 +638,12 @@ async fn test_reduce_max() {
 impl<D: DataType> Tensor<2, D> {
     pub fn min(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
-            ReduceFunction::new("let output = min(a, b);".to_string(), "3.40282e+38")
-                .with_name("min"),
+            ReduceFunction::new(
+                "let output = min(a, b);".to_string(),
+                "3.40282e+38",
+                D::WGSL_TYPE,
+            )
+            .with_name("min"),
             dim,
         )
     }
@@ -668,7 +683,8 @@ async fn test_reduce_min() {
 impl<D: DataType> Tensor<2, D> {
     pub fn product(&self, dim: usize) -> Tensor<1, D> {
         self.reduce(
-            ReduceFunction::new("let output = a * b;".to_string(), "1.0").with_name("product"),
+            ReduceFunction::new("let output = a * b;".to_string(), "1.0", D::WGSL_TYPE)
+                .with_name("product"),
             dim,
         )
     }

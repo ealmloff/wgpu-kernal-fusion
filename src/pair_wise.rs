@@ -153,14 +153,16 @@ impl UntypedPairWiseKernel {
         let mut tensors = vec![first.clone(), second.clone()];
         if requires_new_tensor {
             let output_tensor = TensorData::new_for_shape(
-                second.device(),
-                second.layout().shape(),
+                first.device(),
+                first.layout().shape(),
                 self.output_datatype(),
             );
             tensors.push(output_tensor);
         }
         kernel.run_with_query(&tensors, query, command_encoder);
-        requires_new_tensor.then(|| tensors[2].clone())
+        requires_new_tensor.then(|| {
+            tensors[2].clone()
+        })
     }
 }
 

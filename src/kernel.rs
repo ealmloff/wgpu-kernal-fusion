@@ -74,7 +74,7 @@ impl GenericKernel {
         datatype: DataTypeEnum,
     ) -> TensorInput {
         let start_index = self.max_binding;
-        self.max_binding += rank * 2 + 2;
+        self.max_binding += 2;
 
         let input = TensorInput {
             start_index,
@@ -189,9 +189,9 @@ impl GenericKernel {
                         },
                         count: None,
                     });
-                    // Tensor offset
+                    // Tensor info
                     entries.push(wgpu::BindGroupLayoutEntry {
-                        binding: tensor_input.get_offset_binding(),
+                        binding: tensor_input.get_info_binding(),
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
@@ -200,32 +200,6 @@ impl GenericKernel {
                         },
                         count: None,
                     });
-                    // Tensor strides
-                    for i in 0..tensor_input.rank {
-                        entries.push(wgpu::BindGroupLayoutEntry {
-                            binding: tensor_input.get_stride_binding(i),
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        });
-                    }
-                    // Tensor size
-                    for i in 0..tensor_input.rank {
-                        entries.push(wgpu::BindGroupLayoutEntry {
-                            binding: tensor_input.get_shape_binding(i),
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        });
-                    }
                 }
                 KernelInputType::Integer(integer_input) => {
                     entries.push(wgpu::BindGroupLayoutEntry {
@@ -301,6 +275,18 @@ impl GenericKernel {
         let mut entries = Vec::new();
         let mut owned_entries = Vec::new();
         let tensors = tensors.into_iter().map(|x| x.into()).collect::<Vec<_>>();
+        fn create_u32_iter_buffer(
+            device: &crate::Device,
+            data: impl IntoIterator<Item = u32>,
+        ) -> wgpu::Buffer {
+            device
+                .wgpu_device()
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: None,
+                    contents: bytemuck::cast_slice(&data.into_iter().collect::<Vec<_>>()),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                })
+        }
         let create_u32_buffer = |device: &crate::Device, data: u32| {
             device
                 .wgpu_device()
@@ -327,25 +313,21 @@ impl GenericKernel {
                         binding: tensor_input.get_tensor_binding(),
                         resource: tensor.buffer().as_entire_binding(),
                     });
-                    // Tensor offset
+                    // Tensor info
                     owned_entries.push((
-                        tensor_input.get_offset_binding(),
-                        create_u32_buffer(device, tensor.layout().offset() as u32),
+                        tensor_input.get_info_binding(),
+                        create_u32_iter_buffer(
+                            device,
+                            std::iter::once(tensor.layout().offset() as u32).chain(
+                                (0..tensor_input.rank).flat_map(|i| {
+                                    [
+                                        tensor.layout().strides()[i as usize] as u32,
+                                        tensor.layout().shape()[i as usize] as u32,
+                                    ]
+                                }),
+                            ),
+                        ),
                     ));
-                    // Tensor strides
-                    for i in 0..tensor_input.rank {
-                        owned_entries.push((
-                            tensor_input.get_stride_binding(i),
-                            create_u32_buffer(device, tensor.layout().strides()[i as usize] as u32),
-                        ));
-                    }
-                    // Tensor size
-                    for i in 0..tensor_input.rank {
-                        owned_entries.push((
-                            tensor_input.get_shape_binding(i),
-                            create_u32_buffer(device, tensor.layout().shape()[i as usize] as u32),
-                        ));
-                    }
                 }
                 (KernelInputType::Integer(integer_input), KernelInputValue::Integer(value)) => {
                     owned_entries.push((integer_input.index, create_u32_buffer(device, *value)));
@@ -654,24 +636,20 @@ impl Display for KernelInput {
                 }
 
                 writeln!(f, "i_{start_index}: array<{datatype}>;")?;
-                let offset_binding = tensor.get_offset_binding();
+
+                writeln!(f, "struct Tensor{start_index}Info {{")?;
+                writeln!(f, "    offset: u32,")?;
+                for i in 0..tensor.rank {
+                    writeln!(f, "    stride_{}: u32,", i)?;
+                    writeln!(f, "    shape_{}: u32,", i)?;
+                }
+                writeln!(f, "}};")?;
+
+                let info_index = tensor.get_info_binding();
                 writeln!(
                     f,
-                    "@group(0) @binding({offset_binding}) var<uniform> i_{offset_binding}: u32;"
+                    "@group(0) @binding({info_index}) var<uniform> i_{info_index}: Tensor{start_index}Info;"
                 )?;
-
-                for i in 0..tensor.rank {
-                    let size_index = tensor.get_shape_binding(i);
-                    let offset_index = tensor.get_stride_binding(i);
-                    writeln!(
-                        f,
-                        "@group(0) @binding({size_index}) var<uniform> i_{size_index}: u32;"
-                    )?;
-                    writeln!(
-                        f,
-                        "@group(0) @binding({offset_index}) var<uniform> i_{offset_index}: u32;"
-                    )?;
-                }
             }
             KernelInputType::Integer(integer) => {
                 let index = integer.index;
@@ -732,28 +710,24 @@ impl TensorInput {
         format!("i_{}", self.get_tensor_binding())
     }
 
-    fn get_offset_binding(&self) -> u32 {
+    fn get_info_binding(&self) -> u32 {
         self.start_index + 1
     }
 
-    pub(crate) fn offset_binding(&self) -> String {
-        format!("i_{}", self.get_offset_binding())
+    fn info_binding(&self) -> String {
+        format!("i_{}", self.get_info_binding())
     }
 
-    fn get_stride_binding(&self, rank: u32) -> u32 {
-        self.start_index + 2 + rank * 2
+    pub(crate) fn offset_binding(&self) -> String {
+        format!("{}.offset", self.info_binding())
     }
 
     pub(crate) fn stride_binding(&self, rank: u32) -> String {
-        format!("i_{}", self.get_stride_binding(rank))
-    }
-
-    fn get_shape_binding(&self, rank: u32) -> u32 {
-        self.start_index + 3 + rank * 2
+        format!("{}.stride_{}", self.info_binding(), rank)
     }
 
     pub(crate) fn shape_binding(&self, rank: u32) -> String {
-        format!("i_{}", self.get_shape_binding(rank))
+        format!("{}.shape_{}", self.info_binding(), rank)
     }
 
     pub(crate) fn check_bounds(
