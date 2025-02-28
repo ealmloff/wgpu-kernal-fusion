@@ -25,7 +25,9 @@ impl VisitComputeGraph for LayoutPass {
         let operation = graph.element_wise.get(&key).unwrap();
         let input = operation.value;
         let input_layout = self.output_layout.get(&input).unwrap();
-        self.output_layout.insert(key.into(), input_layout.clone());
+        let output_layout =
+            TensorInfo::new(input_layout.layout().clone(), operation.function.datatype());
+        self.output_layout.insert(key.into(), output_layout);
     }
 
     fn visit_pair_wise(

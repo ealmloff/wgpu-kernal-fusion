@@ -1,5 +1,5 @@
 use enumset::{EnumSet, EnumSetType};
-use std::fmt::Write;
+use std::fmt::{Debug, Write};
 use std::{fmt::Display, sync::OnceLock};
 use wgpu::{BindGroupLayout, CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
@@ -529,7 +529,7 @@ impl From<f32> for KernelInputValue {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Function {
     id: u32,
     ty: String,

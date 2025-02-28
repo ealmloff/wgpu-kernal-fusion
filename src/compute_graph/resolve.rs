@@ -116,13 +116,14 @@ impl ComputeGraphInner {
         let first = self.resolve(first_input, &mut *command_encoder);
         let second = self.resolve(second_input, &mut *command_encoder);
         let mut kernel = UntypedPairWiseKernel::new(operation.function.clone(), first.datatype());
-        kernel.set_pre_element_wise([
-            UntypedElementWiseKernel::new(first_pre_element_wise, first.datatype()),
-            UntypedElementWiseKernel::new(second_pre_element_wise, first.datatype()),
-        ]);
-        kernel.set_post_element_wise(UntypedElementWiseKernel::new(then, first.datatype()));
-        kernel.run_with_query(&first, &second, None, command_encoder);
-        second
+        let first_pre = UntypedElementWiseKernel::new(first_pre_element_wise, first.datatype());
+        let second_pre = UntypedElementWiseKernel::new(second_pre_element_wise, first.datatype());
+        let pre_element_wise_output = first_pre.out_datatype();
+        kernel.set_pre_element_wise([first_pre, second_pre]);
+        kernel.set_post_element_wise(UntypedElementWiseKernel::new(then, pre_element_wise_output));
+        kernel
+            .run_with_query(&first, &second, None, command_encoder)
+            .unwrap_or(second)
     }
 
     fn resolve_mat_mul(
@@ -169,7 +170,7 @@ impl ComputeGraphInner {
         let element_wise_before =
             element_wise::UntypedElementWiseKernel::new(element_wise_before, input.datatype());
         let element_wise_after =
-            element_wise::UntypedElementWiseKernel::new(then, input.datatype());
+            element_wise::UntypedElementWiseKernel::new(then, element_wise_before.out_datatype());
         kernel.set_post_element_wise(element_wise_after);
         kernel.set_pre_element_wise(element_wise_before);
         kernel.run_with_query(&input, operation.axis, None, command_encoder)

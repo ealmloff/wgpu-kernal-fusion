@@ -77,9 +77,7 @@ impl UntypedReduceKernel {
     }
 
     pub fn out_datatype(&self) -> DataTypeEnum {
-        self.post_element_wise
-            .out_datatype()
-            .unwrap_or(self.datatype)
+        self.post_element_wise.out_datatype()
     }
 
     fn tiled_map(&self, blocksize: u32, input_rank: u32) -> GenericKernel {

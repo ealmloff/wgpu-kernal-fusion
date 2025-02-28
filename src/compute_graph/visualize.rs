@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::visit::VisitComputeGraph;
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
@@ -12,7 +14,8 @@ impl ComputeGraphInner {
         let mut layout_pass = layout_pass::LayoutPass::default();
         layout_pass.visit(self, root);
         let mut statements = Vec::new();
-        self.add_node_to_graph(&mut statements, root, &layout_pass);
+        let mut identities = HashMap::new();
+        self.add_node_to_graph(&mut statements, root, &layout_pass, &mut identities);
         GraphBuilder::default()
             .graph_type(GraphType::DiGraph)
             .strict(false)
@@ -27,27 +30,36 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: AnyComputeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
-        match key {
-            AnyComputeKey::ElementWiseComputeNodeKey(element_wise_compute_node_key) => {
-                self.add_element_wise_to_graph(graph, element_wise_compute_node_key, layout_pass)
-            }
-            AnyComputeKey::PairWiseComputeNodeKey(pair_wise_compute_node_key) => {
-                self.add_pair_wise_to_graph(graph, pair_wise_compute_node_key, layout_pass)
-            }
+        if let Some(id) = identities.get(&key) {
+            return id.clone();
+        }
+        let id = match key {
+            AnyComputeKey::ElementWiseComputeNodeKey(element_wise_compute_node_key) => self
+                .add_element_wise_to_graph(
+                    graph,
+                    element_wise_compute_node_key,
+                    layout_pass,
+                    identities,
+                ),
+            AnyComputeKey::PairWiseComputeNodeKey(pair_wise_compute_node_key) => self
+                .add_pair_wise_to_graph(graph, pair_wise_compute_node_key, layout_pass, identities),
             AnyComputeKey::MatMulComputeNodeKey(mat_mul_compute_node_key) => {
-                self.add_mat_mul_to_graph(graph, mat_mul_compute_node_key, layout_pass)
+                self.add_mat_mul_to_graph(graph, mat_mul_compute_node_key, layout_pass, identities)
             }
             AnyComputeKey::ReduceComputeNodeKey(reduce_compute_node_key) => {
-                self.add_reduce_to_graph(graph, reduce_compute_node_key, layout_pass)
+                self.add_reduce_to_graph(graph, reduce_compute_node_key, layout_pass, identities)
             }
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
-                self.add_tensor_to_graph(graph, tensor_compute_node_key, layout_pass)
+                self.add_tensor_to_graph(graph, tensor_compute_node_key, layout_pass, identities)
             }
             AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
-                self.add_slice_to_graph(graph, slice_compute_node_key, layout_pass)
+                self.add_slice_to_graph(graph, slice_compute_node_key, layout_pass, identities)
             }
-        }
+        };
+        identities.insert(key, id.clone());
+        id
     }
 
     fn add_element_wise_to_graph(
@@ -55,11 +67,17 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: ElementWiseComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let operation = self.element_wise.get(&key).unwrap();
-        let input = self.add_node_to_graph(graph, operation.value, layout_pass);
+        let input = self.add_node_to_graph(graph, operation.value, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("{} ({})", operation.function.name(), output_layout));
+        let id = Identity::quoted(format!(
+            "{} ({}) #{}",
+            operation.function.name(),
+            output_layout,
+            key.0
+        ));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
@@ -76,12 +94,18 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: PairWiseComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let operation = self.pair_wise.get(&key).unwrap();
-        let first = self.add_node_to_graph(graph, operation.first, layout_pass);
-        let second = self.add_node_to_graph(graph, operation.second, layout_pass);
+        let first = self.add_node_to_graph(graph, operation.first, layout_pass, identities);
+        let second = self.add_node_to_graph(graph, operation.second, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("{} ({})", operation.function.name(), output_layout));
+        let id = Identity::quoted(format!(
+            "{} ({}) #{}",
+            operation.function.name(),
+            output_layout,
+            key.0
+        ));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
@@ -101,12 +125,13 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: MatMulComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let operation = self.mat_mul.get(&key).unwrap();
-        let first = self.add_node_to_graph(graph, operation.first, layout_pass);
-        let second = self.add_node_to_graph(graph, operation.second, layout_pass);
+        let first = self.add_node_to_graph(graph, operation.first, layout_pass, identities);
+        let second = self.add_node_to_graph(graph, operation.second, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("matmul ({})", output_layout));
+        let id = Identity::quoted(format!("matmul ({}) #{}", output_layout, key.0));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
@@ -126,11 +151,17 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: ReduceComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let operation = self.reduce.get(&key).unwrap();
-        let input = self.add_node_to_graph(graph, operation.value, layout_pass);
+        let input = self.add_node_to_graph(graph, operation.value, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("{} ({})", operation.function.name(), output_layout));
+        let id = Identity::quoted(format!(
+            "{} ({}) #{}",
+            operation.function.name(),
+            output_layout,
+            key.0
+        ));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
@@ -147,11 +178,12 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: SliceComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let operation = self.slice.get(&key).unwrap();
-        let input = self.add_node_to_graph(graph, operation.input, layout_pass);
+        let input = self.add_node_to_graph(graph, operation.input, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("slice ({})", output_layout));
+        let id = Identity::quoted(format!("slice ({}) #{}", output_layout, key.0));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
@@ -168,9 +200,10 @@ impl ComputeGraphInner {
         graph: &mut Vec<Stmt>,
         key: TensorComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
+        _: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
-        let id = Identity::quoted(format!("tensor_{} ({})", key.0, output_layout));
+        let id = Identity::quoted(format!("tensor ({}) #{}", output_layout, key.0));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,

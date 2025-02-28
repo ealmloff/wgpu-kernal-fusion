@@ -212,6 +212,17 @@ impl TensorData {
         }
     }
 
+    pub(crate) fn new_for_shape(device: &Device, shape: &[usize], datatype: DataTypeEnum) -> Self {
+        let size = padded_tensor_size(shape.iter().product::<usize>() as u64);
+        let buffer = device.wgpu_device().create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        Self::new_from_buffer(device, buffer, shape, datatype)
+    }
+
     fn new_inner<'a, D: DataType, I: Iterator<Item = &'a D>>(
         device: &Device,
         data: I,

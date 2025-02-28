@@ -33,6 +33,15 @@ pub(crate) struct UntypedElementWiseKernel {
     input_datatype: DataTypeEnum,
 }
 
+impl std::fmt::Debug for UntypedElementWiseKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UntypedElementWiseKernel")
+            .field("functions", &self.functions)
+            .field("input_datatype", &self.input_datatype)
+            .finish()
+    }
+}
+
 impl UntypedElementWiseKernel {
     pub fn new(functions: Vec<ElementWiseFunction>, input_datatype: DataTypeEnum) -> Self {
         Self {
@@ -69,8 +78,12 @@ impl UntypedElementWiseKernel {
             .collect()
     }
 
-    pub fn out_datatype(&self) -> Option<DataTypeEnum> {
-        Some(self.functions.first()?.datatype)
+    pub fn out_datatype(&self) -> DataTypeEnum {
+        if let Some(first) = self.functions.first() {
+            first.datatype
+        } else {
+            self.input_datatype
+        }
     }
 
     pub fn run_with_query(
@@ -81,7 +94,7 @@ impl UntypedElementWiseKernel {
     ) -> Option<TensorData> {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
-        let output_type = self.out_datatype().unwrap();
+        let output_type = self.out_datatype();
         let requires_new_tensor = self.input_datatype != output_type;
 
         let functions = OnceLock::new();
@@ -150,7 +163,7 @@ impl UntypedElementWiseKernel {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ElementWiseFunction {
     name: Option<String>,
     operation: String,
@@ -173,6 +186,10 @@ impl ElementWiseFunction {
 
     pub(crate) fn name(&self) -> &str {
         self.name.as_deref().unwrap_or("element_wise")
+    }
+
+    pub(crate) fn datatype(&self) -> DataTypeEnum {
+        self.datatype
     }
 }
 
@@ -1315,7 +1332,7 @@ impl<const R: usize, D: DataType> Neg for Tensor<R, D> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new("let output = -input;", D::WGSL_TYPE)
-                .with_name("abs"),
+                .with_name("neg"),
         })
     }
 }
@@ -1356,7 +1373,7 @@ impl<const R: usize> CastTensor<R, half::f16> for Tensor<R, f32> {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
             function: ElementWiseFunction::new("let output = f16(input);", DataTypeEnum::F16)
-                .with_name("abs"),
+                .with_name("cast"),
         })
     }
 }

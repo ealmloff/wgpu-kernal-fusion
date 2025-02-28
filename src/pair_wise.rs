@@ -65,44 +65,57 @@ impl UntypedPairWiseKernel {
         self.pre_element_wise = element_wise;
     }
 
+    fn output_datatype(&self) -> DataTypeEnum {
+        self.post_element_wise.out_datatype()
+    }
+
     pub fn add_function(&self, kernel: &mut GenericKernel) -> Function {
         kernel.add_function(
             self.function.datatype,
             self.function.operation.clone(),
-            [
-                ("a".to_string(), self.input_datatype.to_string()),
-                ("b".to_string(), self.input_datatype.to_string()),
-            ],
+            ["a", "b"].iter().enumerate().map(|(i, x)| {
+                (
+                    x.to_string(),
+                    self.pre_element_wise[i].out_datatype().to_string(),
+                )
+            }),
         )
     }
 
     pub fn run_with_query(
         &self,
         first: &TensorData,
-        out: &TensorData,
+        second: &TensorData,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
-    ) {
-        assert_eq!(first.layout().shape(), out.layout().shape());
-        let contiguous = first.layout().is_contiguous() && out.layout().is_contiguous();
+    ) -> Option<TensorData> {
+        assert_eq!(first.layout().shape(), second.layout().shape());
+        let contiguous = first.layout().is_contiguous() && second.layout().is_contiguous();
         let rank = first.layout().rank();
+        let requires_new_tensor = self.input_datatype != self.output_datatype();
 
         let pre_element_wise_functions: OnceLock<[Vec<Function>; 2]> = OnceLock::new();
         let pair_wise_function = OnceLock::new();
         let post_element_wise_functions = OnceLock::new();
         let create_kernel = || {
+            let mut datatypes = vec![self.input_datatype, self.input_datatype];
+
+            if requires_new_tensor {
+                datatypes.push(self.output_datatype());
+            }
+
             VisitTiledKernel::new(
                 rank as u32,
                 TILE_SIZE,
                 contiguous,
-                vec![first.datatype(), out.datatype()],
+                datatypes,
                 |kernel, indexes, tensors| {
-                    let [first_index, second_index] = indexes else {
-                        panic!("invalid number of tensors")
-                    };
-                    let [first_tensor, out_tensor] = tensors else {
-                        panic!("invalid number of tensors")
-                    };
+                    let first_index = &indexes[0];
+                    let second_index = &indexes[1];
+                    let output_index = indexes.get(2).unwrap_or(second_index);
+                    let first_tensor = &tensors[0];
+                    let second_tensor = &tensors[1];
+                    let out_tensor = tensors.get(2).unwrap_or(second_tensor);
                     let mut kernel_text = String::new();
                     let pre_element_wise_functions = pre_element_wise_functions.get_or_init(|| {
                         std::array::from_fn(|i| self.pre_element_wise[i].add_functions(kernel))
@@ -115,7 +128,7 @@ impl UntypedPairWiseKernel {
                     writeln!(&mut kernel_text, "let a = {first_value};").unwrap();
                     let second_value = pre_element_wise_functions[1]
                         .iter()
-                        .fold(format!("{out_tensor}[{second_index}]"), |acc, f| {
+                        .fold(format!("{second_tensor}[{second_index}]"), |acc, f| {
                             f.call(vec![acc])
                         });
                     writeln!(&mut kernel_text, "let b = {second_value};").unwrap();
@@ -127,7 +140,7 @@ impl UntypedPairWiseKernel {
                     let result = post_element_wise_functions
                         .iter()
                         .fold(result, |acc, f| f.call(vec![acc]));
-                    writeln!(&mut kernel_text, "{out_tensor}[{second_index}] = {result};").unwrap();
+                    writeln!(&mut kernel_text, "{out_tensor}[{output_index}] = {result};").unwrap();
                     kernel_text
                 },
             )
@@ -137,7 +150,17 @@ impl UntypedPairWiseKernel {
         } else {
             self.sparse_kernel.get_or_init(create_kernel)
         };
-        kernel.run_with_query([first, out], query, command_encoder);
+        let mut tensors = vec![first.clone(), second.clone()];
+        if requires_new_tensor {
+            let output_tensor = TensorData::new_for_shape(
+                second.device(),
+                second.layout().shape(),
+                self.output_datatype(),
+            );
+            tensors.push(output_tensor);
+        }
+        kernel.run_with_query(&tensors, query, command_encoder);
+        requires_new_tensor.then(|| tensors[2].clone())
     }
 }
 
