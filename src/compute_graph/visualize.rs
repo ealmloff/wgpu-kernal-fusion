@@ -190,7 +190,7 @@ impl ComputeGraphInner {
             attr: None,
         });
         graph.push(Stmt::Edge(
-            Edge::head_node(id.clone(), None).arrow_to_node(input, None),
+            Edge::head_node(input, None).arrow_to_node(id.clone(), None),
         ));
         id
     }
