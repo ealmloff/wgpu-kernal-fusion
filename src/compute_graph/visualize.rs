@@ -58,7 +58,8 @@ impl ComputeGraphInner {
     ) -> Identity {
         let operation = self.element_wise.get(&key).unwrap();
         let input = self.add_node_to_graph(graph, operation.value, layout_pass);
-        let id = Identity::quoted(operation.function.name());
+        let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
+        let id = Identity::quoted(format!("{} ({})", operation.function.name(), output_layout));
         graph.push(Stmt::Node {
             id: id.clone(),
             port: None,
