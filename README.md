@@ -12,8 +12,8 @@ TODO:
 - [x] PairWise ops
 - [x] Fuse Elementwise ops into PairWise ops
 - [ ] Analyze buffer usage for in-place ops
-- [ ] Memory move/cat/etc ops
-- [ ] Cast ops
+- [x] Memory move/cat/etc ops
+- [x] Cast ops
 - [ ] Fuse PairWise ops together?
 - [ ] Fuse parallel Reduce ops?
 - [ ] Dynamically apply fusion based on runtime throughput data
@@ -24,7 +24,7 @@ Llama Op Requirements:
 - [ ] Matmul
 - [ ] Rope
 - [ ] Unqueeze
-- [ ] Cat
+- [x] Cat
 - [ ] Reshape
 - [ ] Transpose
 - [ ] Softmax last dim
