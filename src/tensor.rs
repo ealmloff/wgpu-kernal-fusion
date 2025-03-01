@@ -1,7 +1,7 @@
 use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
-    ops::{Deref, Index, Range},
+    ops::{Add, AddAssign, Deref, Div, DivAssign, Index, Mul, MulAssign, Range, Sub, SubAssign},
     sync::Arc,
 };
 
@@ -18,16 +18,49 @@ use crate::{
     slice_assign::SliceAssignOperation,
 };
 
-pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
+pub trait DataType:
+    Add<Output = Self>
+    + AddAssign
+    + Sub<Output = Self>
+    + SubAssign
+    + Mul<Output = Self>
+    + MulAssign
+    + Div<Output = Self>
+    + DivAssign
+    + PartialOrd
+    + NoUninit
+    + AnyBitPattern
+    + Debug
+    + Display
+{
     const WGSL_TYPE: DataTypeEnum;
+
+    fn zero() -> Self;
+    fn one() -> Self;
 }
 
 impl DataType for f32 {
     const WGSL_TYPE: DataTypeEnum = DataTypeEnum::F32;
+
+    fn zero() -> Self {
+        0.
+    }
+
+    fn one() -> Self {
+        1.
+    }
 }
 
 impl DataType for half::f16 {
     const WGSL_TYPE: DataTypeEnum = DataTypeEnum::F16;
+
+    fn zero() -> Self {
+        half::f16::from_f32(0.)
+    }
+
+    fn one() -> Self {
+        half::f16::from_f32(1.)
+    }
 }
 
 #[non_exhaustive]
@@ -659,6 +692,30 @@ impl<const R: usize, D: DataType + PartialEq> PartialEq for TensorSlice<R, D> {
                 return false;
             }
         }
+    }
+}
+
+impl<'a, D: DataType> PartialEq<&'a [D]> for TensorSlice<1, D> {
+    fn eq(&self, other: &&'a [D]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<'a, const N: usize, D: DataType> PartialEq<[D; N]> for TensorSlice<1, D> {
+    fn eq(&self, other: &[D; N]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<'a, D: DataType> PartialEq<TensorSlice<1, D>> for &'a [D] {
+    fn eq(&self, other: &TensorSlice<1, D>) -> bool {
+        *self == other.as_slice()
+    }
+}
+
+impl<'a, const N: usize, D: DataType> PartialEq<TensorSlice<1, D>> for &'a [D; N] {
+    fn eq(&self, other: &TensorSlice<1, D>) -> bool {
+        *self == other.as_slice()
     }
 }
 

@@ -29,10 +29,9 @@ Llama Op Requirements:
 - [ ] Transpose
 - [ ] Softmax last dim
 - [ ] sdpa
-- [ ] narraw
-- [ ] broadcast add
+- [x] narraw
 - [x] silu
-- [ ] arange
+- [x] arange
 - [x] sin
 - [x] cos
 - [ ] rotary_emb::rope
