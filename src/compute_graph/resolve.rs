@@ -2,12 +2,14 @@ use wgpu::CommandEncoder;
 
 use crate::{
     ElementWiseFunction, UntypedElementWiseKernel, UntypedPairWiseKernel, UntypedReduceKernel,
-    element_wise, matmul::UntypedMatMul, tensor::TensorData,
+    element_wise, matmul::UntypedMatMul, resize::UntypedResizeKernel,
+    slice_assign::UntypedSliceAssignKernel, tensor::TensorData,
 };
 
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
-    PairWiseComputeNodeKey, ReduceComputeNodeKey, SliceComputeNodeKey, TensorComputeNodeKey,
+    PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
+    SliceComputeNodeKey, TensorComputeNodeKey,
 };
 
 impl ComputeGraphInner {
@@ -36,6 +38,12 @@ impl ComputeGraphInner {
             }
             AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
                 self.resolve_slice(slice_compute_node_key, command_encoder)
+            }
+            AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
+                self.resolve_resize(resize_compute_node_key, command_encoder)
+            }
+            AnyComputeKey::SliceAssignComputeNodeKey(slice_assign_compute_node_key) => {
+                self.resolve_slice_assign(slice_assign_compute_node_key, command_encoder)
             }
         }
     }
@@ -185,6 +193,31 @@ impl ComputeGraphInner {
         let input = self.resolve(operation.input, &mut *command_encoder);
 
         operation.run(&input)
+    }
+
+    fn resolve_resize(
+        &self,
+        key: ResizeComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
+        let operation = self.resize.get(&key).unwrap();
+        let input = self.resolve(operation.input, &mut *command_encoder);
+        let kernel = UntypedResizeKernel::new(&operation.new_shape);
+
+        kernel.run_with_query(&input, None, command_encoder)
+    }
+
+    fn resolve_slice_assign(
+        &self,
+        key: SliceAssignComputeNodeKey,
+        command_encoder: &mut CommandEncoder,
+    ) -> TensorData {
+        let operation = self.slice_assign.get(&key).unwrap();
+        let input = self.resolve(operation.input, &mut *command_encoder);
+        let value = self.resolve(operation.value, &mut *command_encoder);
+        let kernel = UntypedSliceAssignKernel::new(&operation.slices);
+
+        kernel.run_with_query(&input, &value, None, command_encoder)
     }
 
     fn resolve_tensor(&self, key: TensorComputeNodeKey, _: &mut CommandEncoder) -> TensorData {

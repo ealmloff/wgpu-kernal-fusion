@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use super::visit::VisitComputeGraph;
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
-    PairWiseComputeNodeKey, ReduceComputeNodeKey, SliceComputeNodeKey, TensorComputeNodeKey,
-    layout_pass,
+    PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
+    SliceComputeNodeKey, TensorComputeNodeKey, layout_pass,
 };
 use tabbycat::Graph;
 use tabbycat::{Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList};
@@ -57,6 +57,16 @@ impl ComputeGraphInner {
             AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
                 self.add_slice_to_graph(graph, slice_compute_node_key, layout_pass, identities)
             }
+            AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
+                self.add_resize_to_graph(graph, resize_compute_node_key, layout_pass, identities)
+            }
+            AnyComputeKey::SliceAssignComputeNodeKey(slice_assign_compute_node_key) => self
+                .add_slice_assign_to_graph(
+                    graph,
+                    slice_assign_compute_node_key,
+                    layout_pass,
+                    identities,
+                ),
         };
         identities.insert(key, id.clone());
         id
@@ -191,6 +201,54 @@ impl ComputeGraphInner {
         });
         graph.push(Stmt::Edge(
             Edge::head_node(input, None).arrow_to_node(id.clone(), None),
+        ));
+        id
+    }
+
+    fn add_resize_to_graph(
+        &self,
+        graph: &mut Vec<Stmt>,
+        key: ResizeComputeNodeKey,
+        layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
+    ) -> Identity {
+        let operation = self.resize.get(&key).unwrap();
+        let input = self.add_node_to_graph(graph, operation.input, layout_pass, identities);
+        let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
+        let id = Identity::quoted(format!("resize ({}) #{}", output_layout, key.0));
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(input, None).arrow_to_node(id.clone(), None),
+        ));
+        id
+    }
+
+    fn add_slice_assign_to_graph(
+        &self,
+        graph: &mut Vec<Stmt>,
+        key: SliceAssignComputeNodeKey,
+        layout_pass: &layout_pass::LayoutPass,
+        identities: &mut HashMap<AnyComputeKey, Identity>,
+    ) -> Identity {
+        let operation = self.slice_assign.get(&key).unwrap();
+        let input = self.add_node_to_graph(graph, operation.input, layout_pass, identities);
+        let value = self.add_node_to_graph(graph, operation.value, layout_pass, identities);
+        let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
+        let id = Identity::quoted(format!("slice_assign ({}) #{}", output_layout, key.0));
+        graph.push(Stmt::Node {
+            id: id.clone(),
+            port: None,
+            attr: None,
+        });
+        graph.push(Stmt::Edge(
+            Edge::head_node(input, None).arrow_to_node(id.clone(), None),
+        ));
+        graph.push(Stmt::Edge(
+            Edge::head_node(value, None).arrow_to_node(id.clone(), None),
         ));
         id
     }

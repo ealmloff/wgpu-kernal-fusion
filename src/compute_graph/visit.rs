@@ -1,6 +1,7 @@
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
-    PairWiseComputeNodeKey, ReduceComputeNodeKey, SliceComputeNodeKey, TensorComputeNodeKey,
+    PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
+    SliceComputeNodeKey, TensorComputeNodeKey,
 };
 
 pub(crate) trait VisitComputeGraph: Sized {
@@ -20,6 +21,12 @@ pub(crate) trait VisitComputeGraph: Sized {
             }
             AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
                 self.visit_slice(graph, slice_compute_node_key);
+            }
+            AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
+                self.visit_resize(graph, resize_compute_node_key);
+            }
+            AnyComputeKey::SliceAssignComputeNodeKey(slice_assign_compute_node_key) => {
+                self.visit_slice_assign(graph, slice_assign_compute_node_key);
             }
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
                 self.visit_tensor(graph, tensor_compute_node_key);
@@ -45,6 +52,14 @@ pub(crate) trait VisitComputeGraph: Sized {
 
     fn visit_slice(&mut self, graph: &ComputeGraphInner, key: SliceComputeNodeKey) {
         visit_slice(self, graph, key);
+    }
+
+    fn visit_resize(&mut self, graph: &ComputeGraphInner, key: ResizeComputeNodeKey) {
+        visit_resize(self, graph, key);
+    }
+
+    fn visit_slice_assign(&mut self, graph: &ComputeGraphInner, key: SliceAssignComputeNodeKey) {
+        visit_slice_assign(self, graph, key);
     }
 
     fn visit_tensor(&mut self, graph: &ComputeGraphInner, key: TensorComputeNodeKey) {
@@ -104,6 +119,28 @@ pub(crate) fn visit_slice(
     let operation = graph.slice.get(&key).unwrap();
     let input = operation.input;
     visitor.visit(graph, input);
+}
+
+pub(crate) fn visit_resize(
+    visitor: &mut impl VisitComputeGraph,
+    graph: &ComputeGraphInner,
+    key: ResizeComputeNodeKey,
+) {
+    let operation = graph.resize.get(&key).unwrap();
+    let input = operation.input;
+    visitor.visit(graph, input);
+}
+
+pub(crate) fn visit_slice_assign(
+    visitor: &mut impl VisitComputeGraph,
+    graph: &ComputeGraphInner,
+    key: SliceAssignComputeNodeKey,
+) {
+    let operation = graph.slice_assign.get(&key).unwrap();
+    let input = operation.input;
+    visitor.visit(graph, input);
+    let value = operation.value;
+    visitor.visit(graph, value);
 }
 
 pub(crate) fn visit_tensor(

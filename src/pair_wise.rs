@@ -160,9 +160,7 @@ impl UntypedPairWiseKernel {
             tensors.push(output_tensor);
         }
         kernel.run_with_query(&tensors, query, command_encoder);
-        requires_new_tensor.then(|| {
-            tensors[2].clone()
-        })
+        requires_new_tensor.then(|| tensors[2].clone())
     }
 }
 

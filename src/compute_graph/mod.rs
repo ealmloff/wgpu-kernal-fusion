@@ -12,7 +12,8 @@ mod visualize;
 
 use crate::{
     Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
-    slice::SliceOperation, tensor::TensorData,
+    resize::ResizeOperation, slice::SliceOperation, slice_assign::SliceAssignOperation,
+    tensor::TensorData,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -61,6 +62,24 @@ impl SliceComputeNodeKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct ResizeComputeNodeKey(usize);
+impl ResizeComputeNodeKey {
+    fn new() -> Self {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        Self(COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SliceAssignComputeNodeKey(usize);
+impl SliceAssignComputeNodeKey {
+    fn new() -> Self {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
+        Self(COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct TensorComputeNodeKey(usize);
 impl TensorComputeNodeKey {
     fn new() -> Self {
@@ -76,6 +95,8 @@ pub(crate) enum AnyComputeKey {
     MatMulComputeNodeKey(MatMulComputeNodeKey),
     ReduceComputeNodeKey(ReduceComputeNodeKey),
     SliceComputeNodeKey(SliceComputeNodeKey),
+    ResizeComputeNodeKey(ResizeComputeNodeKey),
+    SliceAssignComputeNodeKey(SliceAssignComputeNodeKey),
     TensorComputeNodeKey(TensorComputeNodeKey),
 }
 
@@ -115,6 +136,18 @@ impl From<SliceComputeNodeKey> for AnyComputeKey {
     }
 }
 
+impl From<ResizeComputeNodeKey> for AnyComputeKey {
+    fn from(value: ResizeComputeNodeKey) -> Self {
+        Self::ResizeComputeNodeKey(value)
+    }
+}
+
+impl From<SliceAssignComputeNodeKey> for AnyComputeKey {
+    fn from(value: SliceAssignComputeNodeKey) -> Self {
+        Self::SliceAssignComputeNodeKey(value)
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ComputeGraph {
     inner: Arc<ArcSwap<RwLock<ComputeGraphInner>>>,
@@ -142,6 +175,8 @@ impl ComputeGraph {
                 inner.mat_mul.extend(other_inner.mat_mul.drain());
                 inner.reduce.extend(other_inner.reduce.drain());
                 inner.slice.extend(other_inner.slice.drain());
+                inner.resize.extend(other_inner.resize.drain());
+                inner.slice_assign.extend(other_inner.slice_assign.drain());
                 inner.tensor.extend(other_inner.tensor.drain());
             })
         });
@@ -181,6 +216,21 @@ impl ComputeGraph {
         id
     }
 
+    pub(crate) fn create_resize(&self, op: ResizeOperation) -> ResizeComputeNodeKey {
+        let id = ResizeComputeNodeKey::new();
+        self.with_mut(|inner| inner.resize.insert(id, op));
+        id
+    }
+
+    pub(crate) fn create_slice_assign(
+        &self,
+        op: SliceAssignOperation,
+    ) -> SliceAssignComputeNodeKey {
+        let id = SliceAssignComputeNodeKey::new();
+        self.with_mut(|inner| inner.slice_assign.insert(id, op));
+        id
+    }
+
     pub(crate) fn create_tensor(&self, info: TensorData) -> TensorComputeNodeKey {
         let id = TensorComputeNodeKey::new();
         self.with_mut(|inner| inner.tensor.insert(id, info));
@@ -204,5 +254,7 @@ struct ComputeGraphInner {
     mat_mul: HashMap<MatMulComputeNodeKey, MatMulOperation>,
     reduce: HashMap<ReduceComputeNodeKey, ReduceOperation>,
     slice: HashMap<SliceComputeNodeKey, SliceOperation>,
+    resize: HashMap<ResizeComputeNodeKey, ResizeOperation>,
+    slice_assign: HashMap<SliceAssignComputeNodeKey, SliceAssignOperation>,
     tensor: HashMap<TensorComputeNodeKey, TensorData>,
 }

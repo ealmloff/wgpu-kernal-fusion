@@ -6,7 +6,7 @@ use super::{
     AnyComputeKey,
     visit::{
         VisitComputeGraph, visit_element_wise, visit_mat_mul, visit_pair_wise, visit_reduce,
-        visit_slice, visit_tensor,
+        visit_resize, visit_slice, visit_slice_assign, visit_tensor,
     },
 };
 
@@ -92,6 +92,30 @@ impl VisitComputeGraph for LayoutPass {
             key.into(),
             TensorInfo::new(new_layout, input_layout.datatype()),
         );
+    }
+
+    fn visit_resize(&mut self, graph: &super::ComputeGraphInner, key: super::ResizeComputeNodeKey) {
+        visit_resize(self, graph, key);
+        let operation = graph.resize.get(&key).unwrap();
+        let input = operation.input;
+        let input_layout = self.output_layout.get(&input).unwrap();
+        let new_layout = Layout::contiguous(&operation.new_shape);
+        self.output_layout.insert(
+            key.into(),
+            TensorInfo::new(new_layout, input_layout.datatype()),
+        );
+    }
+
+    fn visit_slice_assign(
+        &mut self,
+        graph: &super::ComputeGraphInner,
+        key: super::SliceAssignComputeNodeKey,
+    ) {
+        visit_slice_assign(self, graph, key);
+        let operation = graph.slice_assign.get(&key).unwrap();
+        let input = operation.input;
+        let input_layout = self.output_layout.get(&input).unwrap();
+        self.output_layout.insert(key.into(), input_layout.clone());
     }
 
     fn visit_tensor(&mut self, graph: &super::ComputeGraphInner, key: super::TensorComputeNodeKey) {

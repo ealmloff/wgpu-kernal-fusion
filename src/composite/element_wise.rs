@@ -35,9 +35,3 @@ async fn test_silu() {
     assert!((output[[2, 0]] - silu(data[2][0])).abs() < 0.001);
     assert!((output[[2, 1]] - silu(data[2][1])).abs() < 0.001);
 }
-
-// freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
-// t = torch.arange(end, device=freqs.device, dtype=torch.float32)
-// freqs = torch.outer(t, freqs)
-// freqs_cis = torch.polar(torch.ones_like(freqs), freqs)  # complex64
-// return freqs_cis

@@ -19,6 +19,8 @@ mod matmul;
 mod pair_wise;
 mod query;
 mod reduce;
+mod resize;
 mod slice;
+mod slice_assign;
 mod tensor;
 mod visit_tiled;

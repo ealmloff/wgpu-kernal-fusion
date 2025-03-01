@@ -13,7 +13,9 @@ use crate::{
     ReduceFunction, ReduceOperation,
     compute_graph::{AnyComputeKey, ComputeGraph},
     layout::Layout,
+    resize::ResizeOperation,
     slice::{Slice, SliceOperation},
+    slice_assign::SliceAssignOperation,
 };
 
 pub trait DataType: NoUninit + AnyBitPattern + Debug + Display {
@@ -167,6 +169,35 @@ impl LazyTensorData {
         let info = self.info.clone();
         let graph = self.graph.clone();
         let key = self.graph.create_slice(op);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn resize(&self, op: ResizeOperation) -> Self {
+        let device = self.device.clone();
+        let mut info = self.info.clone();
+        info.layout = Layout::contiguous(&op.new_shape);
+        let graph = self.graph.clone();
+        let key = self.graph.create_resize(op);
+
+        Self {
+            device,
+            info,
+            graph,
+            key: key.into(),
+        }
+    }
+
+    pub(crate) fn slice_assign(&self, op: SliceAssignOperation) -> Self {
+        let device = self.device.clone();
+        let info = self.info.clone();
+        let graph = self.graph.clone();
+        let key = self.graph.create_slice_assign(op);
 
         Self {
             device,
@@ -464,6 +495,22 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         }
     }
 
+    pub(crate) fn add_resize(&self, op: ResizeOperation) -> Self {
+        Self {
+            data: self.data.resize(op),
+            datatype: PhantomData,
+        }
+    }
+
+    pub(crate) fn add_slice_assign(&self, other: &Self, slices: [Range<usize>; R]) -> Self {
+        self.data.graph.merge(&other.data.graph);
+        let op = SliceAssignOperation::new(self.data.key, other.data.key, slices.into());
+        Self {
+            data: self.data.slice_assign(op),
+            datatype: PhantomData,
+        }
+    }
+
     pub(crate) fn reduce<const OUT: usize>(
         &self,
         function: ReduceFunction,
@@ -486,6 +533,22 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
 
     pub(crate) fn key(&self) -> AnyComputeKey {
         self.data.key
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        self.data.info.layout().shape()
+    }
+
+    pub fn rank(&self) -> usize {
+        self.data.info.layout().rank()
+    }
+
+    pub fn is_contiguous(&self) -> bool {
+        self.data.info.layout().is_contiguous()
+    }
+
+    pub fn datatype(&self) -> DataTypeEnum {
+        self.data.info.datatype()
     }
 }
 

@@ -229,10 +229,6 @@ async fn test_matmul() {
     let data_b = [[1., 2.]];
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
-
-    // let tensor = MatMul::new()
-    //     .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
-    //     .await;
     let tensor = tensor_a.mat_mul(&tensor_b);
     let as_slice = tensor.as_slice().await.unwrap();
     println!("{:?}", as_slice);
