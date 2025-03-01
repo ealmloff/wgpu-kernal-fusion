@@ -116,7 +116,7 @@ impl UntypedReduceKernel {
             "var workgroup_index_remainder = {workgroup_index};"
         )
         .unwrap();
-        for i in 0..output_rank {
+        for i in (0..output_rank).rev() {
             let out_shape_i = output_tensor.shape_binding(i);
             writeln!(
                 &mut kernel_body,

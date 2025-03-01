@@ -506,8 +506,8 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         }
     }
 
-    pub(crate) fn add_resize(&self, op: ResizeOperation) -> Self {
-        Self {
+    pub(crate) fn add_resize<const R2: usize>(&self, op: ResizeOperation) -> Tensor<R2, D> {
+        Tensor {
             data: self.data.resize(op),
             datatype: PhantomData,
         }

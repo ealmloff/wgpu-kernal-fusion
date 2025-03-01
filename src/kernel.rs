@@ -487,6 +487,8 @@ impl GenericKernel {
         writeln!(f, "{}", self.body)?;
         writeln!(f, "}}")?;
 
+        println!("{}", f);
+
         Ok(())
     }
 }
@@ -780,6 +782,10 @@ impl TensorInput {
         for _ in 0..3 {
             write.pop();
         }
+    }
+
+    pub fn rank(&self) -> u32 {
+        self.rank
     }
 }
 

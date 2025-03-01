@@ -25,7 +25,7 @@ Llama Op Requirements:
 - [ ] Rope
 - [ ] Unqueeze
 - [x] Cat
-- [ ] Reshape
+- [x] Reshape
 - [ ] Transpose
 - [ ] Softmax last dim
 - [ ] sdpa

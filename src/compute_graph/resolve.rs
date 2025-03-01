@@ -202,7 +202,7 @@ impl ComputeGraphInner {
     ) -> TensorData {
         let operation = self.resize.get(&key).unwrap();
         let input = self.resolve(operation.input, &mut *command_encoder);
-        let kernel = UntypedResizeKernel::new(&operation.new_shape);
+        let kernel = UntypedResizeKernel::new(&operation.new_shape, &operation.fill_shape);
 
         kernel.run_with_query(&input, None, command_encoder)
     }
