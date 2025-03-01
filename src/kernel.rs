@@ -50,6 +50,10 @@ impl GenericKernel {
     }
 
     pub(crate) fn set_workgroup_size(&mut self, workgroup_size: [u32; 3]) {
+        assert!(
+            workgroup_size.iter().product::<u32>() <= 256,
+            "{workgroup_size:?} product must be <= 256"
+        );
         self.workgroup_size = workgroup_size;
     }
 

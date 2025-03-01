@@ -23,7 +23,6 @@ impl VisitTiledKernel {
         modify_data: impl FnMut(&mut GenericKernel, &[String], &[TensorInput]) -> String,
     ) -> Self {
         let mut kernel = GenericKernel::new();
-        let tensor_count = datatypes.len();
         let kernel_text = Self::build_tiled_map_kernel(
             rank,
             tile_size,
@@ -37,7 +36,7 @@ impl VisitTiledKernel {
         let workgroup_size = if contiguous {
             [blocksize, 1, 1]
         } else {
-            std::array::from_fn(|i| if tensor_count > i { blocksize } else { 1 })
+            std::array::from_fn(|i| if rank as usize > i { blocksize } else { 1 })
         };
         kernel.set_workgroup_size(workgroup_size);
         Self {
@@ -169,7 +168,7 @@ impl VisitTiledKernel {
             ]
         } else {
             let workgroup_size_x = shape
-                .first()
+                .get(0)
                 .map(|x| (*x as u32).div_ceil(self.tile_size * max_blocksize))
                 .unwrap_or(1);
             let workgroup_size_y = shape

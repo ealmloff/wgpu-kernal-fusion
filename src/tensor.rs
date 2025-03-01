@@ -153,7 +153,17 @@ impl LazyTensorData {
     pub(crate) fn reduce(&self, function: ReduceOperation) -> Self {
         let graph = self.graph.clone();
         let device = self.device.clone();
-        let info = self.info.clone();
+        let mut info = self.info.clone();
+        let dim = function.axis;
+        let new_shape: Box<[usize]> = self
+            .info
+            .layout
+            .shape()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| (i != dim).then_some(*x))
+            .collect();
+        info.layout = Layout::contiguous(&new_shape);
         let key = graph.create_reduce(function);
 
         Self {
@@ -166,7 +176,8 @@ impl LazyTensorData {
 
     pub(crate) fn slice(&self, op: SliceOperation) -> Self {
         let device = self.device.clone();
-        let info = self.info.clone();
+        let mut info = self.info.clone();
+        info.layout = self.info.layout.slice(&op.slice.slices);
         let graph = self.graph.clone();
         let key = self.graph.create_slice(op);
 
