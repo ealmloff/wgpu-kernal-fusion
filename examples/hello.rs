@@ -10,19 +10,8 @@ async fn main() {
         }
     });
 
-    let tensor1 = Tensor::new(&device, &vec![[1., 2.]; 100]);
-    let tensor2 = Tensor::new(&device, &vec![[1., 2.]; 100]);
-    let tensor3 = Tensor::new(&device, &vec![[1., 2.]; 100]);
-    // This gets fused into a single kernel
-    let new = Tensor::cat(
-        [
-            (((&tensor1 + &tensor2).cast::<half::f16>() + 1.) / 2.)
-                .cast::<f32>()
-                .silu(),
-            tensor3,
-        ],
-        1,
-    );
-    let out = new.as_slice().await.unwrap();
+    let tensor = Tensor::new(&device, &vec![vec![[1.; 20]; 10]; 10]);
+    let new = tensor.sum(0).sum(0).sum(0);
+    let out: TensorSlice<0, f32> = new.as_slice().await.unwrap();
     println!("{:?}", out);
 }

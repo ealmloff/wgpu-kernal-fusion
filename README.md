@@ -23,7 +23,7 @@ Llama Op Requirements:
 - [ ] RmsNorm
 - [ ] Matmul
 - [ ] Rope
-- [ ] Unqueeze
+- [x] Unqueeze
 - [x] Cat
 - [x] Reshape
 - [ ] Transpose

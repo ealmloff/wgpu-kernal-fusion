@@ -625,6 +625,12 @@ pub struct TensorSlice<const R: usize, D> {
     datatype: PhantomData<D>,
 }
 
+impl<D: DataType + Debug> Debug for TensorSlice<0, D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get([]).fmt(f)
+    }
+}
+
 impl<D: DataType + Debug> Debug for TensorSlice<1, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let shape = self.layout.shape();
