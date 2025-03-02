@@ -5,10 +5,8 @@ use std::time::Duration;
 use criterion::BatchSize;
 use futures::executor::block_on;
 use ndarray::Axis;
-use wgpu_compute::{Device, MatMul, Tensor};
-use wgpu_compute::{
-    ElementWiseFunction, ElementWiseOperation, PerformanceQueries, ReduceOperation, sum,
-};
+use wgpu_compute::Sum;
+use wgpu_compute::{Device, Tensor};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -19,16 +17,6 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn bench_sum_reduce(c: &mut Criterion) {
-    async fn run_op(
-        device: Device,
-        tensor: Tensor<2, f32>,
-        op: Arc<ReduceOperation<f32>>,
-    ) -> Duration {
-        let query = PerformanceQueries::new(&device);
-        op.run_with_query(&tensor, 0, Some(&query));
-        query.wait_for_results().await.elapsed()
-    }
-
     {
         let mut group = c.benchmark_group("sum-wgpu");
         for size in SIZES {
@@ -39,9 +27,6 @@ fn bench_sum_reduce(c: &mut Criterion) {
                     device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
-            let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
-            block_on(tensor.as_slice()).unwrap();
-            let op = Arc::new(ReduceOperation::new(sum()));
 
             group.bench_with_input(BenchmarkId::new("sum-wgpu", size), &size, move |b, &s| {
                 let device = device.clone();
@@ -49,9 +34,11 @@ fn bench_sum_reduce(c: &mut Criterion) {
                     let mut sum = Duration::ZERO;
                     while sum.is_zero() {
                         for _ in 0..iters {
-                            let tensor = tensor.clone();
-                            let op = op.clone();
-                            sum += run_op(device.clone(), tensor, op).await;
+                            let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
+                            _ = tensor.as_slice().await.unwrap();
+                            let new = tensor.sum(0);
+                            let timing = new.all_timing_information().await;
+                            sum += timing.iter().map(|x| x.elapsed()).sum::<Duration>();
                         }
                     }
                     sum

@@ -11,9 +11,9 @@ mod visit;
 mod visualize;
 
 use crate::{
-    Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
-    resize::ResizeOperation, map_layout::MapLayoutOperation, slice_assign::SliceAssignOperation,
-    tensor::TensorData,
+    Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, PerformanceQueries,
+    QueryResults, ReduceOperation, map_layout::MapLayoutOperation, resize::ResizeOperation,
+    slice_assign::SliceAssignOperation, tensor::TensorData,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -245,6 +245,16 @@ impl ComputeGraph {
         device.wgpu_queue().submit(Some(encoder.finish()));
         data
     }
+
+    pub(crate) async fn all_timing_information(&self) -> Vec<QueryResults> {
+        let myself = self.inner.load();
+        let myself = myself.read().unwrap();
+        let mut output = Vec::new();
+        for timing_information in myself.timing_information.values() {
+            output.push(timing_information.wait_for_results().await);
+        }
+        output
+    }
 }
 
 #[derive(Default)]
@@ -257,4 +267,5 @@ struct ComputeGraphInner {
     resize: HashMap<ResizeComputeNodeKey, ResizeOperation>,
     slice_assign: HashMap<SliceAssignComputeNodeKey, SliceAssignOperation>,
     tensor: HashMap<TensorComputeNodeKey, TensorData>,
+    timing_information: HashMap<AnyComputeKey, PerformanceQueries>,
 }

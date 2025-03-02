@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use wgpu_compute::*;
 
 #[tokio::main]
@@ -12,6 +14,7 @@ async fn main() {
 
     let tensor = Tensor::new(&device, &vec![vec![[1.; 20]; 10]; 10]);
     let new = tensor.sum(0).sum(0).sum(0);
-    let out: TensorSlice<0, f32> = new.as_slice().await.unwrap();
-    println!("{:?}", out);
+    let timing = new.all_timing_information().await;
+    println!("segment time: {:?}", timing.iter().map(|x| x.elapsed()).collect::<Vec<_>>());
+    println!("{:?}", timing.iter().map(|x| x.elapsed()).sum::<Duration>());
 }

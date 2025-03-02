@@ -10,11 +10,11 @@ use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
 use crate::{
     Device, ElementWiseOperation, MatMulOperation, PairWiseFunction, PairWiseOperation,
-    ReduceFunction, ReduceOperation,
+    QueryResults, ReduceFunction, ReduceOperation,
     compute_graph::{AnyComputeKey, ComputeGraph},
     layout::Layout,
-    resize::ResizeOperation,
     map_layout::MapLayoutOperation,
+    resize::ResizeOperation,
     slice_assign::SliceAssignOperation,
 };
 
@@ -285,6 +285,11 @@ impl LazyTensorData {
     pub(crate) fn materialize(&self) -> TensorData {
         self.graph.resolve(self.key, &self.device)
     }
+
+    pub(crate) async fn all_timing_information(&self) -> Vec<QueryResults> {
+        self.materialize();
+        self.graph.all_timing_information().await
+    }
 }
 
 #[derive(Clone)]
@@ -536,6 +541,10 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
     pub async fn as_slice(&self) -> Result<TensorSlice<R, D>, wgpu::BufferAsyncError> {
         let tensor = self.data.materialize();
         Self::as_slice_from_tensor_data(&tensor).await
+    }
+
+    pub async fn all_timing_information(&self) -> Vec<QueryResults> {
+        self.data.all_timing_information().await
     }
 
     pub(crate) fn element_wise<D2: DataType>(

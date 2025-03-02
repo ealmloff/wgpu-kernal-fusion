@@ -3,32 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use criterion::BatchSize;
-use futures::executor::block_on;
-use wgpu_compute::{Device, MatMul, Tensor};
-use wgpu_compute::{
-    ElementWiseFunction, ElementWiseOperation, PairWiseOperation, PerformanceQueries, add,
-};
-
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::{criterion_group, criterion_main};
+use futures::executor::block_on;
+use wgpu_compute::{Device, Tensor};
 
 use criterion::async_executor::FuturesExecutor;
 
 const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
 
 fn bench_add(c: &mut Criterion) {
-    async fn run_op(
-        device: Device,
-        first: Tensor<2, f32>,
-        second: Tensor<2, f32>,
-        op: Arc<PairWiseOperation<f32>>,
-    ) -> Duration {
-        let query = PerformanceQueries::new(&device);
-        op.run_with_query(&first, &second, Some(&query));
-        query.wait_for_results().await.elapsed()
-    }
-
     {
         let mut group = c.benchmark_group("add-wgpu");
         for size in SIZES {
@@ -39,9 +24,6 @@ fn bench_add(c: &mut Criterion) {
                     device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
-            let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
-            block_on(tensor.as_slice()).unwrap();
-            let op = Arc::new(PairWiseOperation::new(add()));
 
             group.bench_with_input(BenchmarkId::new("add-wgpu", size), &size, move |b, &s| {
                 let device = device.clone();
@@ -49,9 +31,11 @@ fn bench_add(c: &mut Criterion) {
                     let mut sum = Duration::ZERO;
                     while sum.is_zero() {
                         for _ in 0..iters {
-                            sum +=
-                                run_op(device.clone(), tensor.clone(), tensor.clone(), op.clone())
-                                    .await;
+                            let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
+                            _ = tensor.as_slice().await.unwrap();
+                            let new = &tensor + &tensor;
+                            let timing = new.all_timing_information().await;
+                            sum += timing.iter().map(|x| x.elapsed()).sum::<Duration>();
                         }
                     }
                     sum

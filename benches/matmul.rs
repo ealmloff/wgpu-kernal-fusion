@@ -3,8 +3,7 @@ use std::time::Duration;
 
 use criterion::BatchSize;
 use futures::executor::block_on;
-use wgpu_compute::{Device, MatMul, PerformanceQueries, Tensor};
-use wgpu_compute::{ElementWiseFunction, ElementWiseOperation};
+use wgpu_compute::{Device, PerformanceQueries, Tensor};
 
 use criterion::BenchmarkId;
 use criterion::Criterion;
@@ -15,19 +14,6 @@ use criterion::async_executor::FuturesExecutor;
 const SIZES: [usize; 5] = [100, 200, 500, 1000, 5000];
 
 fn matmul(c: &mut Criterion) {
-    // Here we have an async function to benchmark
-    async fn matmul(
-        device: Device,
-        tensor_a: Tensor<2, f32>,
-        tensor_b: Tensor<2, f32>,
-    ) -> Duration {
-        let query = PerformanceQueries::new(&device);
-        let tensor = MatMul::new()
-            .run_with_query(&device, &tensor_a, &tensor_b, Some(&query))
-            .await;
-        query.wait_for_results().await.elapsed()
-    }
-
     {
         let mut group = c.benchmark_group("matmul-wgpu");
 
@@ -39,8 +25,6 @@ fn matmul(c: &mut Criterion) {
                     device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
                 }
             });
-            let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
-            block_on(tensor.as_slice()).unwrap();
 
             group.bench_with_input(
                 BenchmarkId::new("matmul-wgpu", size),
@@ -51,7 +35,11 @@ fn matmul(c: &mut Criterion) {
                         let mut sum = Duration::ZERO;
                         while sum.is_zero() {
                             for _ in 0..iters {
-                                sum += matmul(device.clone(), tensor.clone(), tensor.clone()).await;
+                                let tensor = Tensor::new(&device, &vec![vec![1.; size]; size]);
+                                _ = tensor.as_slice().await.unwrap();
+                                let new = tensor.mat_mul(&tensor);
+                                let timing = new.all_timing_information().await;
+                                sum += timing.iter().map(|x| x.elapsed()).sum::<Duration>();
                             }
                         }
                         sum
