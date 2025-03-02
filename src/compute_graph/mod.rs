@@ -4,6 +4,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use tabbycat::Graph;
 
 mod layout_pass;
 mod resolve;
@@ -244,6 +245,10 @@ impl ComputeGraph {
         let data = self.with_mut(|inner| inner.resolve(key, &mut encoder));
         device.wgpu_queue().submit(Some(encoder.finish()));
         data
+    }
+
+    pub(crate) fn graphvis(&self, key: AnyComputeKey) -> Graph {
+        self.with_mut(|inner| inner.graphvis(key))
     }
 
     pub(crate) async fn all_timing_information(&self) -> Vec<QueryResults> {

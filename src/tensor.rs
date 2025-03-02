@@ -6,6 +6,7 @@ use std::{
 };
 
 use bytemuck::{AnyBitPattern, NoUninit};
+use tabbycat::Graph;
 use wgpu::{BufferDescriptor, COPY_BUFFER_ALIGNMENT, util::DownloadBuffer};
 
 use crate::{
@@ -289,6 +290,10 @@ impl LazyTensorData {
     pub(crate) async fn all_timing_information(&self) -> Vec<QueryResults> {
         self.materialize();
         self.graph.all_timing_information().await
+    }
+
+    pub fn graphvis(&self) -> Graph {
+        self.graph.graphvis(self.key)
     }
 }
 
@@ -626,6 +631,10 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
 
     pub fn datatype(&self) -> DataTypeEnum {
         self.data.info.datatype()
+    }
+
+    pub fn graphvis(&self) -> Graph {
+        self.data.graphvis()
     }
 }
 
