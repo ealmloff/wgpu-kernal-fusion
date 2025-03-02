@@ -11,12 +11,12 @@ const BLOCKSIZE: u32 = 256;
 
 pub(crate) struct ResizeOperation {
     pub(crate) input: AnyComputeKey,
-    pub(crate) new_shape: Vec<usize>,
-    pub(crate) fill_shape: Vec<usize>,
+    pub(crate) new_shape: Box<[usize]>,
+    pub(crate) fill_shape: Box<[usize]>,
 }
 
 impl ResizeOperation {
-    pub fn new(input: AnyComputeKey, new_shape: Vec<usize>, fill_shape: Vec<usize>) -> Self {
+    pub fn new(input: AnyComputeKey, new_shape: Box<[usize]>, fill_shape: Box<[usize]>) -> Self {
         Self {
             input,
             new_shape,
@@ -122,11 +122,7 @@ impl<const R: usize, T: crate::DataType> Tensor<R, T> {
     pub fn resize(&self, new_shape: [usize; R]) -> Tensor<R, T> {
         let new_shape = new_shape.into();
         let input = self.key();
-        self.add_resize(ResizeOperation::new(
-            input,
-            new_shape,
-            self.shape().to_vec(),
-        ))
+        self.add_resize(ResizeOperation::new(input, new_shape, self.shape().into()))
     }
 
     pub fn reshape<const R2: usize>(&self, new_shape: [usize; R2]) -> Tensor<R2, T> {
@@ -134,7 +130,7 @@ impl<const R: usize, T: crate::DataType> Tensor<R, T> {
             new_shape.iter().product::<usize>(),
             self.shape().iter().product::<usize>()
         );
-        let new_shape = new_shape.to_vec();
+        let new_shape: Box<[usize]> = new_shape.into();
         let input = self.key();
         self.add_resize(ResizeOperation::new(
             input,

@@ -9,7 +9,6 @@ pub use tensor::*;
 pub(crate) use element_wise::*;
 pub(crate) use matmul::*;
 pub(crate) use pair_wise::*;
-pub(crate) use reduce::*;
 
 mod composite;
 mod compute_graph;

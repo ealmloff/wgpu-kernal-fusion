@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Layout, TensorInfo};
+use crate::{Layout, TensorLayoutInfo};
 
 use super::{
     AnyComputeKey,
@@ -12,7 +12,7 @@ use super::{
 
 #[derive(Default)]
 pub struct LayoutPass {
-    pub(crate) output_layout: HashMap<AnyComputeKey, TensorInfo>,
+    pub(crate) output_layout: HashMap<AnyComputeKey, TensorLayoutInfo>,
 }
 
 impl VisitComputeGraph for LayoutPass {
@@ -26,7 +26,7 @@ impl VisitComputeGraph for LayoutPass {
         let input = operation.value;
         let input_layout = self.output_layout.get(&input).unwrap();
         let output_layout =
-            TensorInfo::new(input_layout.layout().clone(), operation.function.datatype());
+            TensorLayoutInfo::new(input_layout.layout().clone(), operation.function.datatype());
         self.output_layout.insert(key.into(), output_layout);
     }
 
@@ -58,7 +58,7 @@ impl VisitComputeGraph for LayoutPass {
         let output_layout = Layout::contiguous(&output_shape);
         self.output_layout.insert(
             key.into(),
-            TensorInfo::new(output_layout, first_layout.datatype()),
+            TensorLayoutInfo::new(output_layout, first_layout.datatype()),
         );
     }
 
@@ -78,7 +78,7 @@ impl VisitComputeGraph for LayoutPass {
         let new_layout = Layout::contiguous(&new_shape);
         self.output_layout.insert(
             key.into(),
-            TensorInfo::new(new_layout, input_layout.datatype()),
+            TensorLayoutInfo::new(new_layout, input_layout.datatype()),
         );
     }
 
@@ -90,7 +90,7 @@ impl VisitComputeGraph for LayoutPass {
         let new_layout = input_layout.layout().slice(&operation.slice.slices);
         self.output_layout.insert(
             key.into(),
-            TensorInfo::new(new_layout, input_layout.datatype()),
+            TensorLayoutInfo::new(new_layout, input_layout.datatype()),
         );
     }
 
@@ -102,7 +102,7 @@ impl VisitComputeGraph for LayoutPass {
         let new_layout = Layout::contiguous(&operation.new_shape);
         self.output_layout.insert(
             key.into(),
-            TensorInfo::new(new_layout, input_layout.datatype()),
+            TensorLayoutInfo::new(new_layout, input_layout.datatype()),
         );
     }
 

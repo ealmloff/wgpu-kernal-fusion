@@ -93,24 +93,58 @@ impl Display for DataTypeEnum {
 }
 
 #[derive(Clone)]
-pub(crate) struct TensorInfo {
+pub(crate) struct TensorLayoutInfo {
     layout: Layout,
     datatype: DataTypeEnum,
 }
 
-impl Display for TensorInfo {
+impl Display for TensorLayoutInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?} {}", self.layout.shape(), self.datatype)
     }
 }
 
-impl TensorInfo {
+impl TensorLayoutInfo {
     pub(crate) fn new(layout: Layout, datatype: DataTypeEnum) -> Self {
         Self { layout, datatype }
     }
 
     pub(crate) fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    pub(crate) fn shape(&self) -> &[usize] {
+        self.layout.shape()
+    }
+
+    pub(crate) fn datatype(&self) -> DataTypeEnum {
+        self.datatype
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TensorInfo {
+    shape: Box<[usize]>,
+    datatype: DataTypeEnum,
+}
+
+impl Display for TensorInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {}", self.shape, self.datatype)
+    }
+}
+
+impl TensorInfo {
+    pub(crate) fn new(shape: Box<[usize]>, datatype: DataTypeEnum) -> Self {
+        Self { shape, datatype }
+    }
+
+    pub(crate) fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    pub(crate) fn rank(&self) -> usize {
+        self.shape.len()
     }
 
     pub(crate) fn datatype(&self) -> DataTypeEnum {
@@ -135,7 +169,7 @@ impl LazyTensorData {
 
         Self {
             device,
-            info,
+            info: TensorInfo::new(info.shape().into(), info.datatype()),
             graph,
             key: key.into(),
         }
@@ -190,13 +224,12 @@ impl LazyTensorData {
         let dim = function.axis;
         let new_shape: Box<[usize]> = self
             .info
-            .layout
             .shape()
             .iter()
             .enumerate()
             .filter_map(|(i, x)| (i != dim).then_some(*x))
             .collect();
-        info.layout = Layout::contiguous(&new_shape);
+        info = TensorInfo::new(new_shape.into(), info.datatype());
         let key = graph.create_reduce(function);
 
         Self {
@@ -209,8 +242,8 @@ impl LazyTensorData {
 
     pub(crate) fn slice(&self, op: SliceOperation) -> Self {
         let device = self.device.clone();
-        let mut info = self.info.clone();
-        info.layout = self.info.layout.slice(&op.slice.slices);
+        let new_shape = op.slice.slices.iter().map(|s| s.len()).collect();
+        let info = TensorInfo::new(new_shape, self.info.datatype());
         let graph = self.graph.clone();
         let key = self.graph.create_slice(op);
 
@@ -224,8 +257,7 @@ impl LazyTensorData {
 
     pub(crate) fn resize(&self, op: ResizeOperation) -> Self {
         let device = self.device.clone();
-        let mut info = self.info.clone();
-        info.layout = Layout::contiguous(&op.new_shape);
+        let info = TensorInfo::new(op.new_shape.clone(), self.info.datatype());
         let graph = self.graph.clone();
         let key = self.graph.create_resize(op);
 
@@ -260,7 +292,7 @@ impl LazyTensorData {
 pub(crate) struct TensorData {
     device: Device,
     buffer: Arc<wgpu::Buffer>,
-    info: TensorInfo,
+    info: TensorLayoutInfo,
 }
 
 impl TensorData {
@@ -283,7 +315,7 @@ impl TensorData {
         Self {
             device: device.clone(),
             buffer: buffer.into(),
-            info: TensorInfo { layout, datatype },
+            info: TensorLayoutInfo::new(layout, datatype),
         }
     }
 
@@ -344,10 +376,7 @@ impl TensorData {
         Self {
             device: self.device.clone(),
             buffer: self.buffer.clone(),
-            info: TensorInfo {
-                layout,
-                datatype: self.info.datatype,
-            },
+            info: TensorLayoutInfo::new(layout, self.info.datatype),
         }
     }
 
@@ -367,7 +396,7 @@ impl TensorData {
         &self.buffer
     }
 
-    pub(crate) fn info(&self) -> &TensorInfo {
+    pub(crate) fn info(&self) -> &TensorLayoutInfo {
         &self.info
     }
 }
@@ -580,15 +609,11 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
     }
 
     pub fn shape(&self) -> &[usize] {
-        self.data.info.layout().shape()
+        self.data.info.shape()
     }
 
     pub fn rank(&self) -> usize {
-        self.data.info.layout().rank()
-    }
-
-    pub fn is_contiguous(&self) -> bool {
-        self.data.info.layout().is_contiguous()
+        self.data.info.rank()
     }
 
     pub fn datatype(&self) -> DataTypeEnum {
