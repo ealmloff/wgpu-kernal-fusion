@@ -12,6 +12,24 @@ fn continuous_strides(shape: &[usize]) -> Box<[usize]> {
     strides
 }
 
+pub(crate) fn slice_strides(
+    slices: &[Range<usize>],
+    offset: usize,
+    strides: &[usize],
+) -> (usize, Box<[usize]>) {
+    let start_offset = slices
+        .iter()
+        .zip(strides.iter())
+        .map(|(range, stride)| *stride * range.start)
+        .sum::<usize>();
+
+    (offset + start_offset, strides.into())
+}
+
+pub(crate) fn slice_shape(slices: &[Range<usize>], _shape: &[usize]) -> Box<[usize]> {
+    slices.iter().map(|range| range.len()).collect()
+}
+
 #[derive(Clone)]
 pub struct Layout {
     offset: usize,
@@ -41,19 +59,14 @@ impl Layout {
         self.offset == 0 && self.strides == continuous_strides(&self.shape)
     }
 
-    pub fn slice(&self, index: &[Range<usize>]) -> Self {
-        let shape = index.iter().map(|range| range.len()).collect();
-
-        let start_offset = index
-            .iter()
-            .zip(self.strides.iter())
-            .map(|(range, stride)| *stride * range.start)
-            .sum::<usize>();
+    pub fn slice(&self, slices: &[Range<usize>]) -> Self {
+        let (offset, strides) = slice_strides(slices, self.offset, &self.strides);
+        let shape = slice_shape(slices, &self.strides);
 
         Self {
-            offset: start_offset,
+            offset,
             shape,
-            strides: self.strides.clone(),
+            strides,
         }
     }
 

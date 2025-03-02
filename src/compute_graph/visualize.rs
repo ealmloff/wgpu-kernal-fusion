@@ -4,7 +4,7 @@ use super::visit::VisitComputeGraph;
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
     PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
-    SliceComputeNodeKey, TensorComputeNodeKey, layout_pass,
+    MapLayoutComputeNodeKey, TensorComputeNodeKey, layout_pass,
 };
 use tabbycat::Graph;
 use tabbycat::{Edge, GraphBuilder, GraphType, Identity, Stmt, StmtList};
@@ -54,7 +54,7 @@ impl ComputeGraphInner {
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
                 self.add_tensor_to_graph(graph, tensor_compute_node_key, layout_pass, identities)
             }
-            AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
+            AnyComputeKey::MapLayoutComputeNodeKey(slice_compute_node_key) => {
                 self.add_slice_to_graph(graph, slice_compute_node_key, layout_pass, identities)
             }
             AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
@@ -186,11 +186,11 @@ impl ComputeGraphInner {
     fn add_slice_to_graph(
         &self,
         graph: &mut Vec<Stmt>,
-        key: SliceComputeNodeKey,
+        key: MapLayoutComputeNodeKey,
         layout_pass: &layout_pass::LayoutPass,
         identities: &mut HashMap<AnyComputeKey, Identity>,
     ) -> Identity {
-        let operation = self.slice.get(&key).unwrap();
+        let operation = self.map_layout.get(&key).unwrap();
         let input = self.add_node_to_graph(graph, operation.input, layout_pass, identities);
         let output_layout = layout_pass.output_layout.get(&key.into()).unwrap();
         let id = Identity::quoted(format!("slice ({}) #{}", output_layout, key.0));

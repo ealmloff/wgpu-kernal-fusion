@@ -9,7 +9,7 @@ use crate::{
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
     PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
-    SliceComputeNodeKey, TensorComputeNodeKey,
+    MapLayoutComputeNodeKey, TensorComputeNodeKey,
 };
 
 impl ComputeGraphInner {
@@ -36,7 +36,7 @@ impl ComputeGraphInner {
             AnyComputeKey::TensorComputeNodeKey(tensor_compute_node_key) => {
                 self.resolve_tensor(tensor_compute_node_key, command_encoder)
             }
-            AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
+            AnyComputeKey::MapLayoutComputeNodeKey(slice_compute_node_key) => {
                 self.resolve_slice(slice_compute_node_key, command_encoder)
             }
             AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
@@ -186,10 +186,10 @@ impl ComputeGraphInner {
 
     fn resolve_slice(
         &self,
-        key: SliceComputeNodeKey,
+        key: MapLayoutComputeNodeKey,
         command_encoder: &mut CommandEncoder,
     ) -> TensorData {
-        let operation = self.slice.get(&key).unwrap();
+        let operation = self.map_layout.get(&key).unwrap();
         let input = self.resolve(operation.input, &mut *command_encoder);
 
         operation.run(&input)

@@ -1,7 +1,7 @@
 use super::{
     AnyComputeKey, ComputeGraphInner, ElementWiseComputeNodeKey, MatMulComputeNodeKey,
     PairWiseComputeNodeKey, ReduceComputeNodeKey, ResizeComputeNodeKey, SliceAssignComputeNodeKey,
-    SliceComputeNodeKey, TensorComputeNodeKey,
+    MapLayoutComputeNodeKey, TensorComputeNodeKey,
 };
 
 pub(crate) trait VisitComputeGraph: Sized {
@@ -19,7 +19,7 @@ pub(crate) trait VisitComputeGraph: Sized {
             AnyComputeKey::ReduceComputeNodeKey(reduce_compute_node_key) => {
                 self.visit_reduce(graph, reduce_compute_node_key);
             }
-            AnyComputeKey::SliceComputeNodeKey(slice_compute_node_key) => {
+            AnyComputeKey::MapLayoutComputeNodeKey(slice_compute_node_key) => {
                 self.visit_slice(graph, slice_compute_node_key);
             }
             AnyComputeKey::ResizeComputeNodeKey(resize_compute_node_key) => {
@@ -50,7 +50,7 @@ pub(crate) trait VisitComputeGraph: Sized {
         visit_reduce(self, graph, key);
     }
 
-    fn visit_slice(&mut self, graph: &ComputeGraphInner, key: SliceComputeNodeKey) {
+    fn visit_slice(&mut self, graph: &ComputeGraphInner, key: MapLayoutComputeNodeKey) {
         visit_slice(self, graph, key);
     }
 
@@ -114,9 +114,9 @@ pub(crate) fn visit_reduce(
 pub(crate) fn visit_slice(
     visitor: &mut impl VisitComputeGraph,
     graph: &ComputeGraphInner,
-    key: SliceComputeNodeKey,
+    key: MapLayoutComputeNodeKey,
 ) {
-    let operation = graph.slice.get(&key).unwrap();
+    let operation = graph.map_layout.get(&key).unwrap();
     let input = operation.input;
     visitor.visit(graph, input);
 }

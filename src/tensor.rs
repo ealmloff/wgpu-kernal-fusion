@@ -14,7 +14,7 @@ use crate::{
     compute_graph::{AnyComputeKey, ComputeGraph},
     layout::Layout,
     resize::ResizeOperation,
-    slice::{Slice, SliceOperation},
+    map_layout::MapLayoutOperation,
     slice_assign::SliceAssignOperation,
 };
 
@@ -240,12 +240,11 @@ impl LazyTensorData {
         }
     }
 
-    pub(crate) fn slice(&self, op: SliceOperation) -> Self {
+    pub(crate) fn map_layout(&self, op: MapLayoutOperation) -> Self {
         let device = self.device.clone();
-        let new_shape = op.slice.slices.iter().map(|s| s.len()).collect();
-        let info = TensorInfo::new(new_shape, self.info.datatype());
+        let info = TensorInfo::new((op.map_size)(self.info.shape()), self.info.datatype());
         let graph = self.graph.clone();
-        let key = self.graph.create_slice(op);
+        let key = self.graph.create_map_layout(op);
 
         Self {
             device,
@@ -597,9 +596,9 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         }
     }
 
-    pub(crate) fn add_slice(&self, op: Slice) -> Self {
+    pub(crate) fn add_map_layout(&self, op: MapLayoutOperation) -> Self {
         Self {
-            data: self.data.slice(SliceOperation::new(self.data.key, op)),
+            data: self.data.map_layout(op),
             datatype: PhantomData,
         }
     }

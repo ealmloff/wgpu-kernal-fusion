@@ -12,7 +12,7 @@ mod visualize;
 
 use crate::{
     Device, ElementWiseOperation, MatMulOperation, PairWiseOperation, ReduceOperation,
-    resize::ResizeOperation, slice::SliceOperation, slice_assign::SliceAssignOperation,
+    resize::ResizeOperation, map_layout::MapLayoutOperation, slice_assign::SliceAssignOperation,
     tensor::TensorData,
 };
 
@@ -53,8 +53,8 @@ impl ReduceComputeNodeKey {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct SliceComputeNodeKey(usize);
-impl SliceComputeNodeKey {
+pub(crate) struct MapLayoutComputeNodeKey(usize);
+impl MapLayoutComputeNodeKey {
     fn new() -> Self {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         Self(COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
@@ -94,7 +94,7 @@ pub(crate) enum AnyComputeKey {
     PairWiseComputeNodeKey(PairWiseComputeNodeKey),
     MatMulComputeNodeKey(MatMulComputeNodeKey),
     ReduceComputeNodeKey(ReduceComputeNodeKey),
-    SliceComputeNodeKey(SliceComputeNodeKey),
+    MapLayoutComputeNodeKey(MapLayoutComputeNodeKey),
     ResizeComputeNodeKey(ResizeComputeNodeKey),
     SliceAssignComputeNodeKey(SliceAssignComputeNodeKey),
     TensorComputeNodeKey(TensorComputeNodeKey),
@@ -130,9 +130,9 @@ impl From<TensorComputeNodeKey> for AnyComputeKey {
     }
 }
 
-impl From<SliceComputeNodeKey> for AnyComputeKey {
-    fn from(value: SliceComputeNodeKey) -> Self {
-        Self::SliceComputeNodeKey(value)
+impl From<MapLayoutComputeNodeKey> for AnyComputeKey {
+    fn from(value: MapLayoutComputeNodeKey) -> Self {
+        Self::MapLayoutComputeNodeKey(value)
     }
 }
 
@@ -174,7 +174,7 @@ impl ComputeGraph {
                 inner.pair_wise.extend(other_inner.pair_wise.drain());
                 inner.mat_mul.extend(other_inner.mat_mul.drain());
                 inner.reduce.extend(other_inner.reduce.drain());
-                inner.slice.extend(other_inner.slice.drain());
+                inner.map_layout.extend(other_inner.map_layout.drain());
                 inner.resize.extend(other_inner.resize.drain());
                 inner.slice_assign.extend(other_inner.slice_assign.drain());
                 inner.tensor.extend(other_inner.tensor.drain());
@@ -210,9 +210,9 @@ impl ComputeGraph {
         id
     }
 
-    pub(crate) fn create_slice(&self, op: SliceOperation) -> SliceComputeNodeKey {
-        let id = SliceComputeNodeKey::new();
-        self.with_mut(|inner| inner.slice.insert(id, op));
+    pub(crate) fn create_map_layout(&self, op: MapLayoutOperation) -> MapLayoutComputeNodeKey {
+        let id = MapLayoutComputeNodeKey::new();
+        self.with_mut(|inner| inner.map_layout.insert(id, op));
         id
     }
 
@@ -253,7 +253,7 @@ struct ComputeGraphInner {
     pair_wise: HashMap<PairWiseComputeNodeKey, PairWiseOperation>,
     mat_mul: HashMap<MatMulComputeNodeKey, MatMulOperation>,
     reduce: HashMap<ReduceComputeNodeKey, ReduceOperation>,
-    slice: HashMap<SliceComputeNodeKey, SliceOperation>,
+    map_layout: HashMap<MapLayoutComputeNodeKey, MapLayoutOperation>,
     resize: HashMap<ResizeComputeNodeKey, ResizeOperation>,
     slice_assign: HashMap<SliceAssignComputeNodeKey, SliceAssignOperation>,
     tensor: HashMap<TensorComputeNodeKey, TensorData>,
