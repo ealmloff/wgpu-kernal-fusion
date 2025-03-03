@@ -27,8 +27,7 @@ Llama Op Requirements:
 - [x] Cat
 - [x] Reshape
 - [x] Transpose
-- [ ] Softmax last dim
-- [ ] sdpa
+- [x] Softmax
 - [x] narraw
 - [x] silu
 - [x] arange
