@@ -20,9 +20,9 @@ TODO:
 
 Llama Op Requirements:
 
-- [ ] RmsNorm
+- [x] RmsNorm
 - [ ] Matmul
-- [ ] Rope
+- [x] Rope
 - [x] Unqueeze
 - [x] Cat
 - [x] Reshape
@@ -34,8 +34,6 @@ Llama Op Requirements:
 - [x] arange
 - [x] sin
 - [x] cos
-- [ ] rotary_emb::rope
-- [ ] rotary_emb::rope_i
 
 ## Resources
 

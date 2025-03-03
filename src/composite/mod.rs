@@ -6,3 +6,4 @@ mod silu;
 mod softmax;
 mod unsqueeze;
 pub use unsqueeze::Unsqueeze;
+mod rope;
