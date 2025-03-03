@@ -2,7 +2,7 @@ use crate::{DataType, Sum, Tensor};
 
 impl<D: DataType> Tensor<1, D> {
     pub fn softmax(&self) -> Self {
-        let size = self.shape().try_into().unwrap();
+        let size = *self.shape();
         let exp = self.exp();
         let sum_all = exp.sum(0);
         let sum_all: Tensor<1, D> = sum_all.broadcast(size);

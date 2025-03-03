@@ -621,8 +621,8 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         self.data.key
     }
 
-    pub fn shape(&self) -> &[usize] {
-        self.data.info.shape()
+    pub fn shape(&self) -> &[usize; R] {
+        self.data.info.shape().try_into().unwrap()
     }
 
     pub fn rank(&self) -> usize {

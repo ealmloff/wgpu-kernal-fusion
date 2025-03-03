@@ -814,6 +814,45 @@ async fn test_log2() {
     assert!((output[[2, 1]] - data[2][1].log2()).abs() < 0.001);
 }
 
+impl<const R: usize, T: DataType> Tensor<R, T> {
+    pub fn sqr(&self) -> Self {
+        self.element_wise(ElementWiseOperation {
+            value: self.key(),
+            function: ElementWiseFunction::new("let output = input * input;".to_string(), T::WGSL_TYPE)
+                .with_name("sqr"),
+        })
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_sqr() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., 2.], [3., 4.], [5., 6.]];
+
+    let tensor = Tensor::new(&device, &data);
+
+    let tensor = tensor.sqr();
+
+    let output = tensor.as_slice().await.unwrap();
+    println!("{:?}", output);
+    assert!((output[[0, 0]] - 1. * 1.) < 0.001);
+    assert!((output[[0, 1]] - 4. * 4.) < 0.001);
+    assert!((output[[1, 0]] - 9. * 9.) < 0.001);
+    assert!((output[[1, 1]] - 16. * 16.) < 0.001);
+    assert!((output[[2, 0]] - 25. * 25.) < 0.001);
+    assert!((output[[2, 1]] - 36. * 36.) < 0.001);
+}
+
+
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sqrt(&self) -> Self {
         self.element_wise(ElementWiseOperation {
@@ -1375,6 +1414,12 @@ impl<const R: usize, T> Tensor<R, T> {
 pub trait CastTensor<T>: Sized {
     /// Casts the tensor to another type
     fn cast<const R: usize>(tensor: Tensor<R, Self>) -> Tensor<R, T>;
+}
+
+impl<T> CastTensor<T> for T {
+    fn cast<const R: usize>(tensor: Tensor<R, Self>) -> Tensor<R, Self> {
+        tensor
+    }
 }
 
 impl CastTensor<half::f16> for f32 {

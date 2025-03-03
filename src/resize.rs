@@ -122,7 +122,11 @@ impl<const R: usize, T: crate::DataType> Tensor<R, T> {
     pub fn resize(&self, new_shape: [usize; R]) -> Tensor<R, T> {
         let new_shape = new_shape.into();
         let input = self.key();
-        self.add_resize(ResizeOperation::new(input, new_shape, self.shape().into()))
+        self.add_resize(ResizeOperation::new(
+            input,
+            new_shape,
+            (*self.shape()).into(),
+        ))
     }
 
     pub fn reshape<const R2: usize>(&self, new_shape: [usize; R2]) -> Tensor<R2, T> {

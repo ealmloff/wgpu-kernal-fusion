@@ -58,7 +58,7 @@ async fn test_cat() {
     let tensor2 = Tensor::new(&device, &data2);
 
     let tensor = Tensor::cat([tensor1, tensor2], 1);
-    assert_eq!(tensor.shape(), [3, 4]);
+    assert_eq!(*tensor.shape(), [3, 4]);
 
     let output = tensor.as_slice().await.unwrap();
     println!("{:?}", output);
