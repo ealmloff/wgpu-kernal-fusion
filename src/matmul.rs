@@ -215,123 +215,6 @@ impl UntypedMatMul {
     }
 }
 
-#[cfg(test)]
-#[tokio::test]
-async fn test_matmul() {
-    let device = Device::new().await.unwrap();
-    std::thread::spawn({
-        let device = device.clone();
-        move || loop {
-            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
-        }
-    });
-    let data_a = [[1.], [3.]];
-    let data_b = [[1., 2.]];
-    let tensor_a = Tensor::new(&device, &data_a);
-    let tensor_b = Tensor::new(&device, &data_b);
-    let tensor = tensor_a.mat_mul(&tensor_b);
-    let as_slice = tensor.as_slice().await.unwrap();
-    println!("{:?}", as_slice);
-
-    assert_eq!(as_slice[[0, 0]], 1.);
-    assert_eq!(as_slice[[0, 1]], 2.);
-    assert_eq!(as_slice[[1, 0]], 3.);
-    assert_eq!(as_slice[[1, 1]], 6.);
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn test_matmul_f16() {
-    let device = Device::new().await.unwrap();
-    std::thread::spawn({
-        let device = device.clone();
-        move || loop {
-            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
-        }
-    });
-    let data_a = [[half::f16::from_f32(1.)], [half::f16::from_f32(3.)]];
-    let data_b = [[half::f16::from_f32(1.), half::f16::from_f32(2.)]];
-    let tensor_a = Tensor::new(&device, &data_a);
-    let tensor_b = Tensor::new(&device, &data_b);
-
-    let tensor = tensor_a.mat_mul(&tensor_b);
-    let as_slice = tensor.as_slice().await.unwrap();
-    println!("{:?}", as_slice);
-
-    assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1.));
-    assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2.));
-    assert_eq!(as_slice[[1, 0]], half::f16::from_f32(3.));
-    assert_eq!(as_slice[[1, 1]], half::f16::from_f32(6.));
-}
-
-#[cfg(test)]
-#[tokio::test]
-async fn fuzz_matmul() {
-    use rand::Rng;
-
-    let device = Device::new().await.unwrap();
-    std::thread::spawn({
-        let device = device.clone();
-        move || loop {
-            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
-        }
-    });
-    let max_size = if cfg!(debug_assertions) { 5 } else { 125 };
-    let iterations = if cfg!(debug_assertions) { 10 } else { 100 };
-
-    for _ in 0..iterations {
-        let size1 = rand::rng().random_range(1..max_size);
-        let size2 = rand::rng().random_range(1..max_size);
-        let size3 = rand::rng().random_range(1..max_size);
-
-        let data_a: Vec<Vec<f32>> = (0..size1)
-            .map(|_| (0..size2).map(|_| rand::random()).collect())
-            .collect();
-        let data_b: Vec<Vec<f32>> = (0..size2)
-            .map(|_| (0..size3).map(|_| rand::random()).collect())
-            .collect();
-
-        let tensor_a = Tensor::new(&device, &data_a);
-        let tensor_b = Tensor::new(&device, &data_b);
-
-        let mut ndarray_a = ndarray::Array2::zeros((size1, size2));
-        for i in 0..size1 {
-            for j in 0..size2 {
-                ndarray_a[[i, j]] = data_a[i][j];
-            }
-        }
-        let mut ndarray_b = ndarray::Array2::zeros((size2, size3));
-        for i in 0..size2 {
-            for j in 0..size3 {
-                ndarray_b[[i, j]] = data_b[i][j];
-            }
-        }
-
-        let dot = ndarray_a.dot(&ndarray_b);
-
-        let tensor = tensor_a.mat_mul(&tensor_b);
-        let as_slice = tensor.as_slice().await.unwrap();
-        for i in 0..size1 {
-            for j in 0..size3 {
-                assert_eq!(as_slice[[i, j]], dot[[i, j]]);
-            }
-        }
-    }
-    let data_a = [[1.], [3.]];
-    let data_b = [[1., 2.]];
-    let tensor_a = Tensor::new(&device, &data_a);
-    let tensor_b = Tensor::new(&device, &data_b);
-
-    let tensor = tensor_a.mat_mul(&tensor_b);
-    let as_slice = tensor.as_slice().await.unwrap();
-    println!("{:?}", as_slice);
-
-    assert_eq!(as_slice[[0, 0]], 1.);
-    assert_eq!(as_slice[[0, 1]], 2.);
-    assert_eq!(as_slice[[1, 0]], 3.);
-    assert_eq!(as_slice[[1, 1]], 6.);
-}
-
 fn template(dtype: DataTypeEnum) -> String {
     let enable_fp16 = if dtype == DataTypeEnum::F16 {
         "enable f16;\n"
@@ -667,4 +550,121 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
     }}
 }}"#
     )
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_matmul() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data_a = [[1.], [3.]];
+    let data_b = [[1., 2.]];
+    let tensor_a = Tensor::new(&device, &data_a);
+    let tensor_b = Tensor::new(&device, &data_b);
+    let tensor = tensor_a.mat_mul(&tensor_b);
+    let as_slice = tensor.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+
+    assert_eq!(as_slice[[0, 0]], 1.);
+    assert_eq!(as_slice[[0, 1]], 2.);
+    assert_eq!(as_slice[[1, 0]], 3.);
+    assert_eq!(as_slice[[1, 1]], 6.);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_matmul_f16() {
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data_a = [[half::f16::from_f32(1.)], [half::f16::from_f32(3.)]];
+    let data_b = [[half::f16::from_f32(1.), half::f16::from_f32(2.)]];
+    let tensor_a = Tensor::new(&device, &data_a);
+    let tensor_b = Tensor::new(&device, &data_b);
+
+    let tensor = tensor_a.mat_mul(&tensor_b);
+    let as_slice = tensor.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+
+    assert_eq!(as_slice[[0, 0]], half::f16::from_f32(1.));
+    assert_eq!(as_slice[[0, 1]], half::f16::from_f32(2.));
+    assert_eq!(as_slice[[1, 0]], half::f16::from_f32(3.));
+    assert_eq!(as_slice[[1, 1]], half::f16::from_f32(6.));
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn fuzz_matmul() {
+    use rand::Rng;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let max_size = if cfg!(debug_assertions) { 5 } else { 125 };
+    let iterations = if cfg!(debug_assertions) { 10 } else { 100 };
+
+    for _ in 0..iterations {
+        let size1 = rand::rng().random_range(1..max_size);
+        let size2 = rand::rng().random_range(1..max_size);
+        let size3 = rand::rng().random_range(1..max_size);
+
+        let data_a: Vec<Vec<f32>> = (0..size1)
+            .map(|_| (0..size2).map(|_| rand::random()).collect())
+            .collect();
+        let data_b: Vec<Vec<f32>> = (0..size2)
+            .map(|_| (0..size3).map(|_| rand::random()).collect())
+            .collect();
+
+        let tensor_a = Tensor::new(&device, &data_a);
+        let tensor_b = Tensor::new(&device, &data_b);
+
+        let mut ndarray_a = ndarray::Array2::zeros((size1, size2));
+        for i in 0..size1 {
+            for j in 0..size2 {
+                ndarray_a[[i, j]] = data_a[i][j];
+            }
+        }
+        let mut ndarray_b = ndarray::Array2::zeros((size2, size3));
+        for i in 0..size2 {
+            for j in 0..size3 {
+                ndarray_b[[i, j]] = data_b[i][j];
+            }
+        }
+
+        let dot = ndarray_a.dot(&ndarray_b);
+
+        let tensor = tensor_a.mat_mul(&tensor_b);
+        let as_slice = tensor.as_slice().await.unwrap();
+        for i in 0..size1 {
+            for j in 0..size3 {
+                assert_eq!(as_slice[[i, j]], dot[[i, j]]);
+            }
+        }
+    }
+    let data_a = [[1.], [3.]];
+    let data_b = [[1., 2.]];
+    let tensor_a = Tensor::new(&device, &data_a);
+    let tensor_b = Tensor::new(&device, &data_b);
+
+    let tensor = tensor_a.mat_mul(&tensor_b);
+    let as_slice = tensor.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+
+    assert_eq!(as_slice[[0, 0]], 1.);
+    assert_eq!(as_slice[[0, 1]], 2.);
+    assert_eq!(as_slice[[1, 0]], 3.);
+    assert_eq!(as_slice[[1, 1]], 6.);
 }

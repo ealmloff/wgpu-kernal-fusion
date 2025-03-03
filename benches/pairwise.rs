@@ -11,11 +11,12 @@ use wgpu_compute::{Device, Tensor};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
+const SIZES: [usize; 2] = [100, 1000];
 
 fn bench_add(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("add-wgpu");
+        let group = group.sample_size(20);
         for size in SIZES {
             let device = block_on(Device::new()).unwrap();
             std::thread::spawn({
@@ -46,6 +47,7 @@ fn bench_add(c: &mut Criterion) {
 
     {
         let mut group = c.benchmark_group("add-ndarray");
+        let group = group.sample_size(20);
         for size in SIZES {
             group.bench_with_input(
                 BenchmarkId::new("add-ndarray", size),

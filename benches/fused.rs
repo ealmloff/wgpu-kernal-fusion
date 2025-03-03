@@ -13,11 +13,12 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 4] = [100, 1000, 2000, 5000];
+const SIZES: [usize; 2] = [100, 1000];
 
 fn fused(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("add-const-fused-wgpu");
+        let group = group.sample_size(20);
         for size in SIZES {
             let device = block_on(Device::new()).unwrap();
             std::thread::spawn({
@@ -58,6 +59,7 @@ fn fused(c: &mut Criterion) {
 
     {
         let mut group = c.benchmark_group("add-const-separate-wgpu");
+        let group = group.sample_size(20);
         for size in SIZES {
             let device = block_on(Device::new()).unwrap();
             std::thread::spawn({

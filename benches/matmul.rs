@@ -11,11 +11,12 @@ use criterion::{criterion_group, criterion_main};
 
 use criterion::async_executor::FuturesExecutor;
 
-const SIZES: [usize; 5] = [100, 200, 500, 1000, 5000];
+const SIZES: [usize; 2] = [100, 1000];
 
 fn matmul(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("matmul-wgpu");
+        let group = group.sample_size(20);
 
         for size in SIZES {
             let device = block_on(Device::new()).unwrap();
@@ -51,6 +52,7 @@ fn matmul(c: &mut Criterion) {
 
     {
         let mut group = c.benchmark_group("matmul-ndarray");
+        let group = group.sample_size(20);
 
         for size in SIZES {
             group.bench_with_input(

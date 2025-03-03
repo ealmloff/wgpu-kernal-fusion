@@ -16,6 +16,7 @@ TODO:
 - [x] Cast ops
 - [ ] Fuse PairWise ops together?
 - [ ] Fuse parallel Reduce ops?
+- [ ] Fuse PairWise ops with two of the same input into an elementwise op
 - [ ] Dynamically apply fusion based on runtime throughput data
 
 Llama Op Requirements:
