@@ -610,8 +610,8 @@ impl<D: DataType, const R: usize> Tensor<R, D> {
         }
     }
 
-    pub(crate) fn add_map_layout(&self, op: MapLayoutOperation) -> Self {
-        Self {
+    pub(crate) fn add_map_layout<const R2: usize>(&self, op: MapLayoutOperation) -> Tensor<R2, D> {
+        Tensor {
             data: self.data.map_layout(op),
             datatype: PhantomData,
         }

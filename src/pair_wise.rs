@@ -92,7 +92,8 @@ impl UntypedPairWiseKernel {
         assert_eq!(first.layout().shape(), second.layout().shape());
         let contiguous = first.layout().is_contiguous() && second.layout().is_contiguous();
         let rank = first.layout().rank();
-        let requires_new_tensor = self.input_datatype != self.output_datatype();
+        let requires_new_tensor =
+            self.input_datatype != self.output_datatype() || second.layout().strides().contains(&0);
 
         let pre_element_wise_functions: OnceLock<[Vec<Function>; 2]> = OnceLock::new();
         let pair_wise_function = OnceLock::new();
@@ -187,6 +188,14 @@ impl PairWiseFunction {
 
     pub(crate) fn name(&self) -> &str {
         self.name.as_deref().unwrap_or("pair_wise")
+    }
+}
+
+impl<const R: usize, T: DataType> Add<Tensor<R, T>> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn add(self, rhs: Tensor<R, T>) -> Self::Output {
+        &self + &rhs
     }
 }
 
@@ -353,6 +362,14 @@ async fn test_pair_wise_add_sparse() {
     assert_eq!(as_slice[[2, 0]], 5. + 5.);
 }
 
+impl<const R: usize, T: DataType> Sub<Tensor<R, T>> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn sub(self, rhs: Tensor<R, T>) -> Self::Output {
+        &self - &rhs
+    }
+}
+
 impl<const R: usize, T: DataType> Sub<&Tensor<R, T>> for &Tensor<R, T> {
     type Output = Tensor<R, T>;
 
@@ -391,6 +408,14 @@ async fn test_pair_wise_sub() {
     assert_eq!(as_slice[[1, 1]], 4. - 4.);
     assert_eq!(as_slice[[2, 0]], 5. - 5.);
     assert_eq!(as_slice[[2, 1]], 6. - 6.);
+}
+
+impl<const R: usize, T: DataType> Mul<Tensor<R, T>> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn mul(self, rhs: Tensor<R, T>) -> Self::Output {
+        &self * &rhs
+    }
 }
 
 impl<const R: usize, T: DataType> Mul<&Tensor<R, T>> for &Tensor<R, T> {
@@ -433,6 +458,14 @@ async fn test_pair_wise_mul() {
     assert_eq!(as_slice[[2, 1]], 6. * 6.);
 }
 
+impl<const R: usize, T: DataType> Div<Tensor<R, T>> for Tensor<R, T> {
+    type Output = Tensor<R, T>;
+
+    fn div(self, rhs: Tensor<R, T>) -> Self::Output {
+        &self / &rhs
+    }
+}
+
 impl<const R: usize, T: DataType> Div<&Tensor<R, T>> for &Tensor<R, T> {
     type Output = Tensor<R, T>;
 
@@ -456,7 +489,7 @@ async fn test_pair_wise_div() {
             device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
-    let data_a = [[1., 2.], [3., 4.], [5., 6.]];
+    let data_a = [[1., 4.], [3., 4.], [5., 6.]];
     let data_b = [[1., 2.], [3., 4.], [5., 6.]];
     let tensor_a = Tensor::new(&device, &data_a);
     let tensor_b = Tensor::new(&device, &data_b);
@@ -466,7 +499,7 @@ async fn test_pair_wise_div() {
     println!("{:?}", as_slice);
 
     assert_eq!(as_slice[[0, 0]], 1. / 1.);
-    assert_eq!(as_slice[[0, 1]], 2. / 2.);
+    assert_eq!(as_slice[[0, 1]], 4. / 2.);
     assert_eq!(as_slice[[1, 0]], 3. / 3.);
     assert_eq!(as_slice[[1, 1]], 4. / 4.);
     assert_eq!(as_slice[[2, 0]], 5. / 5.);

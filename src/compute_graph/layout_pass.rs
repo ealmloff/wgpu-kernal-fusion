@@ -82,7 +82,11 @@ impl VisitComputeGraph for LayoutPass {
         );
     }
 
-    fn visit_slice(&mut self, graph: &super::ComputeGraphInner, key: super::MapLayoutComputeNodeKey) {
+    fn visit_slice(
+        &mut self,
+        graph: &super::ComputeGraphInner,
+        key: super::MapLayoutComputeNodeKey,
+    ) {
         visit_slice(self, graph, key);
         let operation = graph.map_layout.get(&key).unwrap();
         let input = operation.input;

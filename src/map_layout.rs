@@ -65,6 +65,37 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
             },
         ))
     }
+
+    pub fn broadcast<const R2: usize>(&self, out_shape: [usize; R2]) -> Tensor<R2, T> {
+        const { assert!(R2 == R + 1) };
+
+        let new_dim = self
+            .shape()
+            .iter()
+            .zip(out_shape.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        assert_eq!(self.shape()[..new_dim], out_shape[..new_dim]);
+        assert_eq!(self.shape()[new_dim..], out_shape[new_dim + 1..]);
+
+        self.add_map_layout(MapLayoutOperation::new(
+            self.key(),
+            move |_| out_shape.into(),
+            move |offset, strides| {
+                let mut new_strides = [0; R2];
+                let mut new_strides_fill = 0;
+                for i in 0..R {
+                    new_strides[new_strides_fill] = strides[i];
+                    new_strides_fill += 1;
+                    if i == new_dim {
+                        new_strides[new_strides_fill] = 0;
+                        new_strides_fill += 1;
+                    }
+                }
+                (offset, new_strides.into())
+            },
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -90,4 +121,29 @@ async fn test_transpose() {
     assert_eq!(as_slice[[1, 0]], 2.);
     assert_eq!(as_slice[[1, 1]], 4.);
     assert_eq!(as_slice[[1, 2]], 6.);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn test_broadcast() {
+    use crate::Device;
+
+    let device = Device::new().await.unwrap();
+    std::thread::spawn({
+        let device = device.clone();
+        move || loop {
+            device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+        }
+    });
+    let data = [[1., 2.], [3., 4.]];
+    let tensor = Tensor::new(&device, &data);
+    let broadcasted = tensor.broadcast([2, 2, 3]);
+    let as_slice = broadcasted.as_slice().await.unwrap();
+    println!("{:?}", as_slice);
+    for i in 0..2 {
+        assert_eq!(as_slice[[0, 0, i]], 1.);
+        assert_eq!(as_slice[[0, 1, i]], 2.);
+        assert_eq!(as_slice[[1, 0, i]], 3.);
+        assert_eq!(as_slice[[1, 1, i]], 4.);
+    }
 }
