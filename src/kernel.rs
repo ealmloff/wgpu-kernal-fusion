@@ -420,6 +420,9 @@ impl GenericKernel {
             | self
                 .enabled_builtins
                 .contains(EnabledBuiltins::SubgroupLocalIndex)
+            | self
+                .enabled_builtins
+                .contains(EnabledBuiltins::WorkgroupLocalIndex)
         {
             built_ins.push_str("@builtin(global_invocation_id) global_id: vec3<u32>, ");
         }
@@ -438,6 +441,24 @@ impl GenericKernel {
         {
             built_ins.push_str("@builtin(subgroup_size) subgroup_size: u32, ");
         }
+        if self
+            .enabled_builtins
+            .contains(EnabledBuiltins::WorkgroupLocalIndex)
+            | self
+                .enabled_builtins
+                .contains(EnabledBuiltins::SubgroupIndex)
+            | self
+                .enabled_builtins
+                .contains(EnabledBuiltins::SubgroupLocalIndex)
+        {
+            built_ins.push_str("@builtin(local_invocation_index) workgroup_local_id: u32, ");
+        }
+        if self
+            .enabled_builtins
+            .contains(EnabledBuiltins::WorkgroupIndex)
+        {
+            built_ins.push_str("@builtin(workgroup_id) workgroup_index: vec3<u32>, ");
+        }
         for _ in 0..2 {
             built_ins.pop();
         }
@@ -453,18 +474,6 @@ impl GenericKernel {
         }
         if self
             .enabled_builtins
-            .contains(EnabledBuiltins::WorkgroupLocalIndex)
-            | self
-                .enabled_builtins
-                .contains(EnabledBuiltins::SubgroupIndex)
-            | self
-                .enabled_builtins
-                .contains(EnabledBuiltins::SubgroupLocalIndex)
-        {
-            writeln!(f, "let workgroup_local_id = global_id.x % BLOCKSIZE;")?;
-        }
-        if self
-            .enabled_builtins
             .contains(EnabledBuiltins::SubgroupIndex)
         {
             writeln!(f, "let subgroup_id = workgroup_local_id / subgroup_size;")?;
@@ -477,12 +486,6 @@ impl GenericKernel {
                 f,
                 "let subgroup_local_id = workgroup_local_id % subgroup_size;"
             )?;
-        }
-        if self
-            .enabled_builtins
-            .contains(EnabledBuiltins::WorkgroupIndex)
-        {
-            writeln!(f, "let workgroup_index = global_id.x / BLOCKSIZE;")?;
         }
         writeln!(f, "{}", self.body)?;
         writeln!(f, "}}")?;

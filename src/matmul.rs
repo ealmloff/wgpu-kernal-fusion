@@ -1,10 +1,11 @@
-use std::sync::OnceLock;
+use std::{fmt::Write, sync::OnceLock};
 
 use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
 
 use crate::{
     Device, Tensor,
     compute_graph::AnyComputeKey,
+    kernel::{GenericKernel, KernelGlobalSpace},
     query::PerformanceQueries,
     tensor::{DataType, DataTypeEnum, TensorData, padded_tensor_size},
 };
@@ -27,23 +28,115 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
     }
 }
 
+const WORK_GROUP_BLOCK_M_SIZE: u32 = 32;
+const WORK_GROUP_BLOCK_N_SIZE: u32 = 32;
+const WORK_GROUP_BLOCK_K_SIZE: u32 = 32;
+
+const SUBGROUP_BLOCK_N_SIZE: u32 = 32;
+const SUBGROUP_BLOCK_M_SIZE: u32 = 32;
+
+const SUBGROUP_BLOCK_M_STEPS: u32 = 16;
+const SUBGROUP_BLOCK_N_STEPS: u32 = 16;
+
+const THREAD_BLOCK_M_SIZE: u32 = 32;
+const THREAD_BLOCK_N_SIZE: u32 = 32;
+
+const WORK_GROUP_SIZE_ELEMENT: u32 = 16;
+const WORK_GROUP_SIZE: [u32; 3] = [WORK_GROUP_SIZE_ELEMENT, WORK_GROUP_SIZE_ELEMENT, 1];
+
 pub(crate) struct UntypedMatMul {
-    kernel: OnceLock<wgpu::ShaderModule>,
+    sparse_kernel: OnceLock<GenericKernel>,
+    first_dim_dense_kernel: OnceLock<GenericKernel>,
     datatype: DataTypeEnum,
 }
 
 impl UntypedMatMul {
     pub(crate) const fn new(datatype: DataTypeEnum) -> Self {
         Self {
-            kernel: OnceLock::new(),
+            sparse_kernel: OnceLock::new(),
+            first_dim_dense_kernel: OnceLock::new(),
             datatype,
         }
     }
 
-    fn compile(&self, device: &Device) -> &wgpu::ShaderModule {
-        self.kernel.get_or_init(|| {
-            let source = template(self.datatype);
-            device.create_shader_module(source)
+    fn compile(&self, device: &Device) -> &GenericKernel {
+        self.first_dim_dense_kernel.get_or_init(|| {
+            // based on https://siboehm.com/articles/22/CUDA-MMM
+            let mut generic_kernel = GenericKernel::new();
+            generic_kernel.set_workgroup_size(WORK_GROUP_SIZE);
+
+            let mut kernel = String::new();
+
+            let input_a = generic_kernel.add_tensor_input(2, false, self.datatype);
+            let input_b = generic_kernel.add_tensor_input(2, false, self.datatype);
+            let output = generic_kernel.add_tensor_input(2, true, self.datatype);
+
+            let cache_a = generic_kernel.add_global_array(
+                KernelGlobalSpace::Workgroup,
+                self.datatype,
+                (WORK_GROUP_SIZE_ELEMENT * WORK_GROUP_SIZE_ELEMENT).to_string(),
+            );
+            let cache_b = generic_kernel.add_global_array(
+                KernelGlobalSpace::Workgroup,
+                self.datatype,
+                (WORK_GROUP_SIZE_ELEMENT * WORK_GROUP_SIZE_ELEMENT).to_string(),
+            );
+
+            let datatype = self.datatype;
+            let workgroup_index = generic_kernel.workgroup_index();
+            let workgroup_local_index = generic_kernel.workgroup_local_index();
+
+            let m_size = input_a.shape_binding(0);
+            let n_size = input_b.shape_binding(1);
+            let k_size = input_a.shape_binding(1);
+            // 2.9296 ms
+            writeln!(&mut kernel, "let thread_col = {workgroup_local_index} % {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "let thread_row = {workgroup_local_index} / {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "var tmp: {datatype};").unwrap();
+
+
+            writeln!(&mut kernel, "for (var block_index = 0u; block_index < {k_size}; block_index += {WORK_GROUP_SIZE_ELEMENT}) {{").unwrap();
+
+            writeln!(&mut kernel, "let a_row = thread_row + {workgroup_index}.x * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "let a_col = thread_col + block_index * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "if a_col < {k_size} && a_row < {m_size} {{").unwrap();
+            writeln!(&mut kernel, "let a_index = a_row * {k_size} + a_col;").unwrap();
+            writeln!(&mut kernel, "{cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = {input_a}[a_index];").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
+            writeln!(&mut kernel, "else {{").unwrap();
+            writeln!(&mut kernel, "{cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = 0.0;").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
+            writeln!(&mut kernel, "let b_row = thread_row + block_index * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "let b_col = thread_col + {workgroup_index}.y * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "if b_row < {k_size} && b_col < {n_size} {{").unwrap();
+            writeln!(&mut kernel, "let b_index = b_row * {n_size} + b_col;").unwrap();
+            writeln!(&mut kernel, "{cache_b}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = {input_b}[b_index];").unwrap(); 
+            writeln!(&mut kernel, "}}").unwrap();
+            writeln!(&mut kernel, "else {{").unwrap();
+            writeln!(&mut kernel, "{cache_b}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = 0.0;").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
+
+            writeln!(&mut kernel, "workgroupBarrier();").unwrap();
+
+            writeln!(&mut kernel, "for (var dot_index = 0u; dot_index < {WORK_GROUP_SIZE_ELEMENT}; dot_index += 1u) {{").unwrap();
+            writeln!(&mut kernel, "tmp += {cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + dot_index] * {cache_b}[dot_index * {WORK_GROUP_SIZE_ELEMENT} + thread_col];").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
+
+            writeln!(&mut kernel, "workgroupBarrier();").unwrap();
+
+            writeln!(&mut kernel, "}}").unwrap();
+
+
+            writeln!(&mut kernel, "let output_row = {workgroup_index}.x * {WORK_GROUP_SIZE_ELEMENT} + thread_row;").unwrap();
+            writeln!(&mut kernel, "let output_col = {workgroup_index}.y * {WORK_GROUP_SIZE_ELEMENT} + thread_col;").unwrap();
+            writeln!(&mut kernel, "if output_col < {n_size} && output_row < {m_size} {{").unwrap();
+            writeln!(&mut kernel, "let output_index = output_row * {n_size} + output_col;").unwrap();
+            writeln!(&mut kernel, "{output}[output_index] = tmp;").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
+
+            generic_kernel.set_body(kernel);
+
+            generic_kernel
         })
     }
 
@@ -91,465 +184,20 @@ impl UntypedMatMul {
         let b_shape = b.layout().shape();
         assert_eq!(*output_tensor.layout().shape(), [a_shape[0], b_shape[1]]);
 
-        let bind_group_layout =
-            device
-                .wgpu_device()
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: None,
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
-        let compute_pipeline_layout =
-            device
-                .wgpu_device()
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: &[&bind_group_layout],
-                    push_constant_ranges: &[],
-                });
-        let pipeline =
-            device
-                .wgpu_device()
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: None,
-                    layout: Some(&compute_pipeline_layout),
-                    module,
-                    entry_point: Some("main"),
-                    cache: None,
-                    compilation_options: PipelineCompilationOptions::default(),
-                });
+        let workgroup_dispatch_size = [
+            (a_shape[0] as u32).div_ceil(WORK_GROUP_SIZE[0]),
+            (b_shape[1] as u32).div_ceil(WORK_GROUP_SIZE[1]),
+            1,
+        ];
 
-        let dims = device
-            .wgpu_device()
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: None,
-                contents: bytemuck::cast_slice(&[
-                    a_shape[0] as u32,
-                    a_shape[1] as _,
-                    b_shape[1] as _,
-                ]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-
-        let bind_group = device
-            .wgpu_device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: dims.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: a.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: b.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: output_tensor.buffer().as_entire_binding(),
-                    },
-                ],
-            });
-
-        {
-            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: query.map(|query| query.compute_timestamp_writes()),
-            });
-            cpass.set_pipeline(&pipeline);
-            cpass.set_bind_group(0, &bind_group, &[]);
-            const WORKGROUP_SIZE: u32 = 16;
-            const TILE_SIZE: u32 = 8;
-            let workgroup_size_a = (a_shape[0] as u32).div_ceil(TILE_SIZE * WORKGROUP_SIZE);
-            let workgroup_size_b = (b_shape[1] as u32).div_ceil(TILE_SIZE * WORKGROUP_SIZE);
-            cpass.dispatch_workgroups(workgroup_size_a, workgroup_size_b, 1);
-        }
-        if let Some(query) = query {
-            query.resolve(command_encoder);
-        }
+        module.run_with_query(
+            device,
+            [a.clone(), b.clone(), output_tensor.clone()],
+            query,
+            command_encoder,
+            workgroup_dispatch_size,
+        );
     }
-}
-
-fn template(dtype: DataTypeEnum) -> String {
-    let enable_fp16 = if dtype == DataTypeEnum::F16 {
-        "enable f16;\n"
-    } else {
-        ""
-    };
-
-    // From https://github.com/zanussbaum/surfgrad/blob/4f696e3ddcbeb2c7686bc7dbb83c3dbb89595591/src/shaders/matmul.ts
-    // Article https://www.nuss-and-bolts.com/p/optimizing-a-webgpu-matmul-kernel
-    format!(
-        r#"{enable_fp16}
-
-struct Dimensions {{
-  M: u32,
-  K: u32,
-  N: u32,
-}}
-
-@group(0) @binding(0) var<uniform> dimensions: Dimensions;
-@group(0) @binding(1) var<storage, read> a: array<{dtype}>;
-@group(0) @binding(2) var<storage, read> b: array<{dtype}>;
-@group(0) @binding(3) var<storage, read_write> result: array<{dtype}>;
-
-const BLOCKSIZE: u32 = 16u;
-const TILE_M: u32 = 8u;  // Tile size in M dimension
-const TILE_N: u32 = 8u;  // Tile size in N dimension
-
-@compute @workgroup_size(BLOCKSIZE, BLOCKSIZE)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {{
-    let row = global_id.y * TILE_M;
-    let col = global_id.x * TILE_N;
-
-    var sums: array<array<{dtype}, TILE_N>, TILE_M>;
-
-    // Compute the 2D tile
-    for (var k = 0u; k < dimensions.K; k++) {{
-      let a_00 = a[row * dimensions.K + k];
-      let a01 = a[(row + 1u) * dimensions.K + k];
-      let a02 = a[(row + 2u) * dimensions.K + k];
-      let a03 = a[(row + 3u) * dimensions.K + k];
-      let a04 = a[(row + 4u) * dimensions.K + k];
-      let a05 = a[(row + 5u) * dimensions.K + k];
-      let a06 = a[(row + 6u) * dimensions.K + k];
-      let a07 = a[(row + 7u) * dimensions.K + k];
-      let b_00 = b[k * dimensions.N + col];
-      let b01 = b[k * dimensions.N + (col + 1u)];
-      let b02 = b[k * dimensions.N + (col + 2u)];
-      let b03 = b[k * dimensions.N + (col + 3u)];
-      let b04 = b[k * dimensions.N + (col + 4u)];
-      let b05 = b[k * dimensions.N + (col + 5u)];
-      let b06 = b[k * dimensions.N + (col + 6u)];
-      let b07 = b[k * dimensions.N + (col + 7u)];
-      sums[0][0] += a_00 * b_00;
-      sums[0][1] += a_00 * b01;
-      sums[0][2] += a_00 * b02;
-      sums[0][3] += a_00 * b03;
-      sums[0][4] += a_00 * b04;
-      sums[0][5] += a_00 * b05;
-      sums[0][6] += a_00 * b06;
-      sums[0][7] += a_00 * b07;
-      sums[1][0] += a01 * b_00;
-      sums[1][1] += a01 * b01;
-      sums[1][2] += a01 * b02;
-      sums[1][3] += a01 * b03;
-      sums[1][4] += a01 * b04;
-      sums[1][5] += a01 * b05;
-      sums[1][6] += a01 * b06;
-      sums[1][7] += a01 * b07;
-      sums[2][0] += a02 * b_00;
-      sums[2][1] += a02 * b01;
-      sums[2][2] += a02 * b02;
-      sums[2][3] += a02 * b03;
-      sums[2][4] += a02 * b04;
-      sums[2][5] += a02 * b05;
-      sums[2][6] += a02 * b06;
-      sums[2][7] += a02 * b07;
-      sums[3][0] += a03 * b_00;
-      sums[3][1] += a03 * b01;
-      sums[3][2] += a03 * b02;
-      sums[3][3] += a03 * b03;
-      sums[3][4] += a03 * b04;
-      sums[3][5] += a03 * b05;
-      sums[3][6] += a03 * b06;
-      sums[3][7] += a03 * b07;
-      sums[4][0] += a04 * b_00;
-      sums[4][1] += a04 * b01;
-      sums[4][2] += a04 * b02;
-      sums[4][3] += a04 * b03;
-      sums[4][4] += a04 * b04;
-      sums[4][5] += a04 * b05;
-      sums[4][6] += a04 * b06;
-      sums[4][7] += a04 * b07;
-      sums[5][0] += a05 * b_00;
-      sums[5][1] += a05 * b01;
-      sums[5][2] += a05 * b02;
-      sums[5][3] += a05 * b03;
-      sums[5][4] += a05 * b04;
-      sums[5][5] += a05 * b05;
-      sums[5][6] += a05 * b06;
-      sums[5][7] += a05 * b07;
-      sums[6][0] += a06 * b_00;
-      sums[6][1] += a06 * b01;
-      sums[6][2] += a06 * b02;
-      sums[6][3] += a06 * b03;
-      sums[6][4] += a06 * b04;
-      sums[6][5] += a06 * b05;
-      sums[6][6] += a06 * b06;
-      sums[6][7] += a06 * b07;
-      sums[7][0] += a07 * b_00;
-      sums[7][1] += a07 * b01;
-      sums[7][2] += a07 * b02;
-      sums[7][3] += a07 * b03;
-      sums[7][4] += a07 * b04;
-      sums[7][5] += a07 * b05;
-      sums[7][6] += a07 * b06;
-      sums[7][7] += a07 * b07;
-    }}
-
-    // Row 0
-    if (row < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[row * dimensions.N + col] = sums[0][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[row * dimensions.N + (col + 1u)] = sums[0][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[row * dimensions.N + (col + 2u)] = sums[0][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[row * dimensions.N + (col + 3u)] = sums[0][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[row * dimensions.N + (col + 4u)] = sums[0][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[row * dimensions.N + (col + 5u)] = sums[0][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[row * dimensions.N + (col + 6u)] = sums[0][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[row * dimensions.N + (col + 7u)] = sums[0][7];
-        }}
-    }}
-
-    // Row 1
-    if (row + 1u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + col] = sums[1][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 1u)] = sums[1][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 2u)] = sums[1][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 3u)] = sums[1][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 4u)] = sums[1][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 5u)] = sums[1][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 6u)] = sums[1][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 1u) * dimensions.N + (col + 7u)] = sums[1][7];
-        }}
-    }}
-
-    // Row 2
-    if (row + 2u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + col] = sums[2][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 1u)] = sums[2][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 2u)] = sums[2][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 3u)] = sums[2][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 4u)] = sums[2][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 5u)] = sums[2][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 6u)] = sums[2][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 2u) * dimensions.N + (col + 7u)] = sums[2][7];
-        }}
-    }}
-
-    // Row 3
-    if (row + 3u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + col] = sums[3][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 1u)] = sums[3][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 2u)] = sums[3][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 3u)] = sums[3][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 4u)] = sums[3][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 5u)] = sums[3][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 6u)] = sums[3][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 3u) * dimensions.N + (col + 7u)] = sums[3][7];
-        }}
-    }}
-    if (row + 4u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + col] = sums[4][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 1u)] = sums[4][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 2u)] = sums[4][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 3u)] = sums[4][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 4u)] = sums[4][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 5u)] = sums[4][5];
-        }}
-        if (col + 6u < dimensions.N) {{ 
-            result[(row + 4u) * dimensions.N + (col + 6u)] = sums[4][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 4u) * dimensions.N + (col + 7u)] = sums[4][7];
-        }}
-    }}
-    if (row + 5u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + col] = sums[5][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 1u)] = sums[5][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 2u)] = sums[5][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 3u)] = sums[5][3]; 
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 4u)] = sums[5][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 5u)] = sums[5][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 6u)] = sums[5][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 5u) * dimensions.N + (col + 7u)] = sums[5][7];
-        }}
-    }}
-    if (row + 6u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + col] = sums[6][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 1u)] = sums[6][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 2u)] = sums[6][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 3u)] = sums[6][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 4u)] = sums[6][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 5u)] = sums[6][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 6u)] = sums[6][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 6u) * dimensions.N + (col + 7u)] = sums[6][7];
-        }}
-    }}
-    if (row + 7u < dimensions.M) {{
-        if (col < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + col] = sums[7][0];
-        }}
-        if (col + 1u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 1u)] = sums[7][1];
-        }}
-        if (col + 2u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 2u)] = sums[7][2];
-        }}
-        if (col + 3u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 3u)] = sums[7][3];
-        }}
-        if (col + 4u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 4u)] = sums[7][4];
-        }}
-        if (col + 5u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 5u)] = sums[7][5];
-        }}
-        if (col + 6u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 6u)] = sums[7][6];
-        }}
-        if (col + 7u < dimensions.N) {{
-            result[(row + 7u) * dimensions.N + (col + 7u)] = sums[7][7];
-        }}
-    }}
-}}"#
-    )
 }
 
 #[cfg(test)]

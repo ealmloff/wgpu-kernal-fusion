@@ -113,7 +113,7 @@ impl UntypedReduceKernel {
         // start offset of the input and output tensors for each thread group.
         writeln!(
             &mut kernel_body,
-            "var workgroup_index_remainder = {workgroup_index};"
+            "var workgroup_index_remainder = {workgroup_index}.x;"
         )
         .unwrap();
         for i in (0..output_rank).rev() {

@@ -16,17 +16,17 @@ const SIZES: [usize; 2] = [100, 1000];
 fn matmul(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("matmul-wgpu");
-        let group = group.sample_size(20);
+
+        let device = block_on(Device::new()).unwrap();
+        std::thread::spawn({
+            let device = device.clone();
+            move || loop {
+                device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
+            }
+        });
 
         for size in SIZES {
-            let device = block_on(Device::new()).unwrap();
-            std::thread::spawn({
-                let device = device.clone();
-                move || loop {
-                    device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
-                }
-            });
-
+            let device = device.clone();
             group.bench_with_input(
                 BenchmarkId::new("matmul-wgpu", size),
                 &size,
