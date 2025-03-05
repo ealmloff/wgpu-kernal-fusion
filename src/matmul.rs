@@ -28,20 +28,13 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
     }
 }
 
-const WORK_GROUP_BLOCK_M_SIZE: u32 = 32;
-const WORK_GROUP_BLOCK_N_SIZE: u32 = 32;
-const WORK_GROUP_BLOCK_K_SIZE: u32 = 32;
+const WORK_GROUP_BLOCK_M_SIZE: u32 = 8;
+const WORK_GROUP_BLOCK_N_SIZE: u32 = 8;
+const WORK_GROUP_BLOCK_K_SIZE: u32 = 8;
 
-const SUBGROUP_BLOCK_N_SIZE: u32 = 32;
-const SUBGROUP_BLOCK_M_SIZE: u32 = 32;
+const THREAD_BLOCK_M_SIZE: u32 = 8;
 
-const SUBGROUP_BLOCK_M_STEPS: u32 = 16;
-const SUBGROUP_BLOCK_N_STEPS: u32 = 16;
-
-const THREAD_BLOCK_M_SIZE: u32 = 32;
-const THREAD_BLOCK_N_SIZE: u32 = 32;
-
-const WORK_GROUP_SIZE_ELEMENT: u32 = 16;
+const WORK_GROUP_SIZE_ELEMENT: u32 = (WORK_GROUP_BLOCK_N_SIZE * WORK_GROUP_BLOCK_M_SIZE) / THREAD_BLOCK_M_SIZE;
 const WORK_GROUP_SIZE: [u32; 3] = [WORK_GROUP_SIZE_ELEMENT, WORK_GROUP_SIZE_ELEMENT, 1];
 
 pub(crate) struct UntypedMatMul {
@@ -59,7 +52,7 @@ impl UntypedMatMul {
         }
     }
 
-    fn compile(&self, device: &Device) -> &GenericKernel {
+    fn compile(&self) -> &GenericKernel {
         self.first_dim_dense_kernel.get_or_init(|| {
             // based on https://siboehm.com/articles/22/CUDA-MMM
             let mut generic_kernel = GenericKernel::new();
@@ -89,44 +82,53 @@ impl UntypedMatMul {
             let m_size = input_a.shape_binding(0);
             let n_size = input_b.shape_binding(1);
             let k_size = input_a.shape_binding(1);
-            // 2.9296 ms
-            writeln!(&mut kernel, "let thread_col = {workgroup_local_index} % {WORK_GROUP_SIZE_ELEMENT};").unwrap();
-            writeln!(&mut kernel, "let thread_row = {workgroup_local_index} / {WORK_GROUP_SIZE_ELEMENT};").unwrap();
-            writeln!(&mut kernel, "let a_row = {k_size} * (thread_row + {workgroup_index}.x * {WORK_GROUP_SIZE_ELEMENT});").unwrap();
-            writeln!(&mut kernel, "var a_col = thread_col;").unwrap();
+            // 1.4743 ms
+            writeln!(&mut kernel, "let block_row = {workgroup_index}.y;").unwrap();
+            writeln!(&mut kernel, "let block_col = {workgroup_index}.x;").unwrap();
+            writeln!(&mut kernel, "let thread_col = {workgroup_local_index} % {WORK_GROUP_BLOCK_N_SIZE};").unwrap();
+            writeln!(&mut kernel, "let thread_row = {workgroup_local_index} / {WORK_GROUP_BLOCK_N_SIZE};").unwrap();
+            writeln!(&mut kernel, "let a_thread_col = {workgroup_local_index} % {WORK_GROUP_BLOCK_K_SIZE};").unwrap();
+            writeln!(&mut kernel, "let a_thread_row = {workgroup_local_index} / {WORK_GROUP_BLOCK_K_SIZE};").unwrap();
+            writeln!(&mut kernel, "let b_thread_col = {workgroup_local_index} % {WORK_GROUP_BLOCK_N_SIZE};").unwrap();
+            writeln!(&mut kernel, "let b_thread_row = {workgroup_local_index} / {WORK_GROUP_BLOCK_N_SIZE};").unwrap();
+            writeln!(&mut kernel, "var results: array<{datatype}, {THREAD_BLOCK_M_SIZE}>;").unwrap();
+            writeln!(&mut kernel, "let a_row = {k_size} * (a_thread_row + block_row * {WORK_GROUP_SIZE_ELEMENT});").unwrap();
+            writeln!(&mut kernel, "var a_col = a_thread_col;").unwrap();
             writeln!(&mut kernel, "let a_row_max = {m_size} * {k_size};").unwrap();
             writeln!(&mut kernel, "let a_col_max = {k_size};").unwrap();
-            writeln!(&mut kernel, "var b_row = {n_size} * thread_row;").unwrap(); 
-            writeln!(&mut kernel, "let b_col = thread_col + {workgroup_index}.y * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
+            writeln!(&mut kernel, "var b_row = {n_size} * b_thread_row;").unwrap(); 
+            writeln!(&mut kernel, "let b_col = b_thread_col + block_col * {WORK_GROUP_SIZE_ELEMENT};").unwrap();
             writeln!(&mut kernel, "let b_row_max = {k_size} * {n_size};").unwrap();
             writeln!(&mut kernel, "let b_col_max = {n_size};").unwrap();
-            writeln!(&mut kernel, "var tmp: {datatype};").unwrap();
 
 
-            writeln!(&mut kernel, "for (var block_index = 0u; block_index < {k_size}; block_index += {WORK_GROUP_SIZE_ELEMENT}) {{").unwrap();
+            writeln!(&mut kernel, "for (var block_index = 0u; block_index < {k_size}; block_index += {WORK_GROUP_BLOCK_K_SIZE}) {{").unwrap();
 
             writeln!(&mut kernel, "if a_col < a_col_max && a_row < a_row_max {{").unwrap();
             writeln!(&mut kernel, "let a_index = a_row + a_col;").unwrap();
-            writeln!(&mut kernel, "{cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = {input_a}[a_index];").unwrap();
+            writeln!(&mut kernel, "{cache_a}[a_thread_row * {WORK_GROUP_BLOCK_K_SIZE} + a_thread_col] = {input_a}[a_index];").unwrap();
             writeln!(&mut kernel, "}}").unwrap();
             writeln!(&mut kernel, "else {{").unwrap();
-            writeln!(&mut kernel, "{cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = 0.0;").unwrap();
+            writeln!(&mut kernel, "{cache_a}[a_thread_row * {WORK_GROUP_BLOCK_K_SIZE} + a_thread_col] = 0.0;").unwrap();
             writeln!(&mut kernel, "}}").unwrap();
             writeln!(&mut kernel, "if b_row < b_row_max && b_col < {n_size} {{").unwrap();
             writeln!(&mut kernel, "let b_index = b_row + b_col;").unwrap();
-            writeln!(&mut kernel, "{cache_b}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = {input_b}[b_index];").unwrap(); 
+            writeln!(&mut kernel, "{cache_b}[b_thread_row * {WORK_GROUP_BLOCK_N_SIZE} + b_thread_col] = {input_b}[b_index];").unwrap(); 
             writeln!(&mut kernel, "}}").unwrap();
             writeln!(&mut kernel, "else {{").unwrap();
-            writeln!(&mut kernel, "{cache_b}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + thread_col] = 0.0;").unwrap();
+            writeln!(&mut kernel, "{cache_b}[b_thread_row * {WORK_GROUP_BLOCK_N_SIZE} + b_thread_col] = 0.0;").unwrap();
             writeln!(&mut kernel, "}}").unwrap();
 
             writeln!(&mut kernel, "workgroupBarrier();").unwrap();
 
-            writeln!(&mut kernel, "a_col += {WORK_GROUP_SIZE_ELEMENT};").unwrap();
-            writeln!(&mut kernel, "b_row += {WORK_GROUP_SIZE_ELEMENT} * {n_size};").unwrap();
+            writeln!(&mut kernel, "a_col += {WORK_GROUP_BLOCK_K_SIZE};").unwrap();
+            writeln!(&mut kernel, "b_row += {WORK_GROUP_BLOCK_K_SIZE} * {n_size};").unwrap();
 
-            writeln!(&mut kernel, "for (var dot_index = 0u; dot_index < {WORK_GROUP_SIZE_ELEMENT}; dot_index += 1u) {{").unwrap();
-            writeln!(&mut kernel, "tmp += {cache_a}[thread_row * {WORK_GROUP_SIZE_ELEMENT} + dot_index] * {cache_b}[dot_index * {WORK_GROUP_SIZE_ELEMENT} + thread_col];").unwrap();
+            writeln!(&mut kernel, "for (var dot_index = 0u; dot_index < {WORK_GROUP_BLOCK_K_SIZE}; dot_index += 1u) {{").unwrap();
+            writeln!(&mut kernel, "let tmp = {cache_b}[dot_index * {WORK_GROUP_BLOCK_N_SIZE} + thread_col];").unwrap();
+            writeln!(&mut kernel, "for (var result_index = 0u; result_index < {THREAD_BLOCK_M_SIZE}; result_index += 1u) {{").unwrap();
+            writeln!(&mut kernel, "results[result_index] += {cache_a}[(thread_row * {THREAD_BLOCK_M_SIZE} + result_index) * {WORK_GROUP_BLOCK_K_SIZE} + dot_index] * tmp;").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
             writeln!(&mut kernel, "}}").unwrap();
 
             writeln!(&mut kernel, "workgroupBarrier();").unwrap();
@@ -134,11 +136,15 @@ impl UntypedMatMul {
             writeln!(&mut kernel, "}}").unwrap();
 
 
-            writeln!(&mut kernel, "let output_row = {workgroup_index}.x * {WORK_GROUP_SIZE_ELEMENT} + thread_row;").unwrap();
-            writeln!(&mut kernel, "let output_col = {workgroup_index}.y * {WORK_GROUP_SIZE_ELEMENT} + thread_col;").unwrap();
+            writeln!(&mut kernel, "let start_output_row = thread_row * {THREAD_BLOCK_M_SIZE} + block_row * {WORK_GROUP_BLOCK_M_SIZE};").unwrap();
+            writeln!(&mut kernel, "let start_output_col = thread_col + block_col * {WORK_GROUP_BLOCK_N_SIZE};").unwrap();
+            writeln!(&mut kernel, "for (var result_index = 0u; result_index < {THREAD_BLOCK_M_SIZE}; result_index += 1u) {{").unwrap();
+            writeln!(&mut kernel, "let output_row = start_output_row + result_index;").unwrap();
+            writeln!(&mut kernel, "let output_col = start_output_col;").unwrap();
             writeln!(&mut kernel, "if output_col < {n_size} && output_row < {m_size} {{").unwrap();
             writeln!(&mut kernel, "let output_index = output_row * {n_size} + output_col;").unwrap();
-            writeln!(&mut kernel, "{output}[output_index] = tmp;").unwrap();
+            writeln!(&mut kernel, "{output}[output_index] = results[result_index];").unwrap();
+            writeln!(&mut kernel, "}}").unwrap();
             writeln!(&mut kernel, "}}").unwrap();
 
             generic_kernel.set_body(kernel);
@@ -185,15 +191,15 @@ impl UntypedMatMul {
         command_encoder: &mut CommandEncoder,
     ) {
         assert_eq!(a.layout().shape()[1], b.layout().shape()[0]);
-        let module = self.compile(device);
+        let module = self.compile();
 
         let a_shape = a.layout().shape();
         let b_shape = b.layout().shape();
         assert_eq!(*output_tensor.layout().shape(), [a_shape[0], b_shape[1]]);
 
         let workgroup_dispatch_size = [
-            (a_shape[0] as u32).div_ceil(WORK_GROUP_SIZE[0]),
-            (b_shape[1] as u32).div_ceil(WORK_GROUP_SIZE[1]),
+            (a_shape[0] as u32).div_ceil(WORK_GROUP_SIZE[0] * THREAD_BLOCK_M_SIZE),
+            (b_shape[1] as u32).div_ceil(WORK_GROUP_SIZE[1] * THREAD_BLOCK_M_SIZE),
             1,
         ];
 
