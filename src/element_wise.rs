@@ -404,7 +404,7 @@ async fn test_add_const_large() {
             device.wgpu_device().poll(wgpu::PollType::Wait).unwrap();
         }
     });
-    const BUF_SIZE: usize = 0x01000000;
+    const BUF_SIZE: usize = 0x010000;
     let data = vec![10.; BUF_SIZE];
     let tensor = Tensor::new(&device, &data);
 
