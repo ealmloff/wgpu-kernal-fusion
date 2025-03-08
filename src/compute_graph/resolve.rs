@@ -79,9 +79,9 @@ impl ComputeGraphInner {
             let input = self.resolve(input, &mut *command_encoder);
             let kernel = UntypedElementWiseKernel::new(functions, input.datatype());
             let query = PerformanceQueries::new(input.device());
-            let result = kernel.run_with_query(&input, Some(&query), command_encoder);
+            let result = kernel.run_with_query(input, Some(&query), command_encoder);
             self.timing_information.insert(key.into(), query);
-            result.unwrap_or(input)
+            result
         }
     }
 
@@ -130,9 +130,9 @@ impl ComputeGraphInner {
         kernel.set_pre_element_wise([first_pre, second_pre]);
         kernel.set_post_element_wise(UntypedElementWiseKernel::new(then, pre_element_wise_output));
         let query = PerformanceQueries::new(first.device());
-        let result = kernel.run_with_query(&first, &second, Some(&query), command_encoder);
+        let result = kernel.run_with_query(first, second, Some(&query), command_encoder);
         self.timing_information.insert(key.into(), query);
-        result.unwrap_or(second)
+        result
     }
 
     fn resolve_mat_mul(

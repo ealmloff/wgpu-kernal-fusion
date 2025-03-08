@@ -1,6 +1,6 @@
 use std::{fmt::Write, sync::OnceLock};
 
-use wgpu::{CommandEncoder, PipelineCompilationOptions, util::DeviceExt};
+use wgpu::CommandEncoder;
 
 use crate::{
     Device, Tensor,
@@ -34,7 +34,8 @@ const WORK_GROUP_BLOCK_K_SIZE: u32 = 8;
 
 const THREAD_BLOCK_M_SIZE: u32 = 8;
 
-const WORK_GROUP_SIZE_ELEMENT: u32 = (WORK_GROUP_BLOCK_N_SIZE * WORK_GROUP_BLOCK_M_SIZE) / THREAD_BLOCK_M_SIZE;
+const WORK_GROUP_SIZE_ELEMENT: u32 =
+    (WORK_GROUP_BLOCK_N_SIZE * WORK_GROUP_BLOCK_M_SIZE) / THREAD_BLOCK_M_SIZE;
 const WORK_GROUP_SIZE: [u32; 3] = [WORK_GROUP_SIZE_ELEMENT, WORK_GROUP_SIZE_ELEMENT, 1];
 
 pub(crate) struct UntypedMatMul {

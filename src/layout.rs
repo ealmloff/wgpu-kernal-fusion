@@ -82,6 +82,12 @@ impl Layout {
         &self.strides
     }
 
+    /// Check if any items in this tensor point to the same allocation. This will be true if
+    /// the tensor has a stride of 0.
+    pub(crate) fn allocation_overlaps(&self) -> bool {
+        self.strides.iter().any(|x| *x == 0)
+    }
+
     pub fn offset(&self) -> usize {
         self.offset
     }

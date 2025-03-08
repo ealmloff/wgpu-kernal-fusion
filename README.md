@@ -11,7 +11,7 @@ TODO:
 - [x] Fuse Elementwise ops into Reduce ops
 - [x] PairWise ops
 - [x] Fuse Elementwise ops into PairWise ops
-- [ ] Analyze buffer usage for in-place ops
+- [x] Analyze buffer usage for in-place ops
 - [x] Memory move/cat/etc ops
 - [x] Cast ops
 - [ ] Fuse PairWise ops together?

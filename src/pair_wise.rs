@@ -84,16 +84,27 @@ impl UntypedPairWiseKernel {
 
     pub fn run_with_query(
         &self,
-        first: &TensorData,
-        second: &TensorData,
+        first: TensorData,
+        second: TensorData,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
-    ) -> Option<TensorData> {
+    ) -> TensorData {
         assert_eq!(first.layout().shape(), second.layout().shape());
         let contiguous = first.layout().is_contiguous() && second.layout().is_contiguous();
         let rank = first.layout().rank();
-        let requires_new_tensor =
-            self.input_datatype != self.output_datatype() || second.layout().strides().contains(&0);
+        let re_used_allocation_index = if self.input_datatype == self.output_datatype() {
+            if first.owned() && !first.layout().allocation_overlaps() {
+                Some(0)
+            } else if second.owned() && !second.layout().allocation_overlaps() {
+                Some(1)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let output_tensor_index = re_used_allocation_index.unwrap_or(2);
+        let requires_new_tensor = re_used_allocation_index.is_none();
 
         let pre_element_wise_functions: OnceLock<[Vec<Function>; 2]> = OnceLock::new();
         let pair_wise_function = OnceLock::new();
@@ -113,10 +124,10 @@ impl UntypedPairWiseKernel {
                 |kernel, indexes, tensors| {
                     let first_index = &indexes[0];
                     let second_index = &indexes[1];
-                    let output_index = indexes.get(2).unwrap_or(second_index);
+                    let output_index = &indexes[output_tensor_index];
                     let first_tensor = &tensors[0];
                     let second_tensor = &tensors[1];
-                    let out_tensor = tensors.get(2).unwrap_or(second_tensor);
+                    let out_tensor = &tensors[output_tensor_index];
                     let mut kernel_text = String::new();
                     let pre_element_wise_functions = pre_element_wise_functions.get_or_init(|| {
                         std::array::from_fn(|i| self.pre_element_wise[i].add_functions(kernel))
@@ -161,7 +172,7 @@ impl UntypedPairWiseKernel {
             tensors.push(output_tensor);
         }
         kernel.run_with_query(&tensors, query, command_encoder);
-        requires_new_tensor.then(|| tensors[2].clone())
+        tensors[output_tensor_index].clone()
     }
 }
 

@@ -408,6 +408,11 @@ impl TensorData {
     pub(crate) fn info(&self) -> &TensorLayoutInfo {
         &self.info
     }
+
+    /// Check if this is the only reference to the buffer
+    pub(crate) fn owned(&self) -> bool {
+        std::sync::Arc::strong_count(&self.buffer) == 1
+    }
 }
 
 pub struct Tensor<const R: usize, D> {

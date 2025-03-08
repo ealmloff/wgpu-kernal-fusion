@@ -88,14 +88,15 @@ impl UntypedElementWiseKernel {
 
     pub fn run_with_query(
         &self,
-        tensor: &TensorData,
+        tensor: TensorData,
         query: Option<&PerformanceQueries>,
         command_encoder: &mut CommandEncoder,
-    ) -> Option<TensorData> {
+    ) -> TensorData {
         let contiguous = tensor.layout().is_contiguous();
         let rank = tensor.layout().rank();
         let output_type = self.out_datatype();
-        let requires_new_tensor = self.input_datatype != output_type;
+        let re_use_allocation = self.input_datatype == output_type && tensor.owned();
+        let requires_new_tensor = !re_use_allocation;
 
         let functions = OnceLock::new();
         let create_kernel = || {
@@ -134,7 +135,7 @@ impl UntypedElementWiseKernel {
         };
         let mut output = None;
         let mut tensors = Vec::new();
-        tensors.push(tensor);
+        tensors.push(tensor.clone());
         if requires_new_tensor {
             let output_buf = tensor
                 .device()
@@ -154,12 +155,12 @@ impl UntypedElementWiseKernel {
                 tensor.layout().shape(),
                 output_type,
             );
+            tensors.push(output_tensor.clone());
             output = Some(output_tensor);
-            tensors.push(output.as_ref().unwrap());
         }
-        kernel.run_with_query(tensors, query, command_encoder);
+        kernel.run_with_query(&tensors, query, command_encoder);
 
-        output
+        output.unwrap_or(tensor)
     }
 }
 
@@ -818,8 +819,11 @@ impl<const R: usize, T: DataType> Tensor<R, T> {
     pub fn sqr(&self) -> Self {
         self.element_wise(ElementWiseOperation {
             value: self.key(),
-            function: ElementWiseFunction::new("let output = input * input;".to_string(), T::WGSL_TYPE)
-                .with_name("sqr"),
+            function: ElementWiseFunction::new(
+                "let output = input * input;".to_string(),
+                T::WGSL_TYPE,
+            )
+            .with_name("sqr"),
         })
     }
 }
@@ -851,7 +855,6 @@ async fn test_sqr() {
     assert!((output[[2, 0]] - 25. * 25.) < 0.001);
     assert!((output[[2, 1]] - 36. * 36.) < 0.001);
 }
-
 
 impl<const R: usize, D: DataType> Tensor<R, D> {
     pub fn sqrt(&self) -> Self {

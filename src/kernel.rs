@@ -107,6 +107,7 @@ impl GenericKernel {
         input
     }
 
+    #[allow(dead_code)]
     pub(crate) fn add_float_input(&mut self) -> FloatInput {
         let index = self.max_binding;
         self.max_binding += 1;
@@ -559,6 +560,7 @@ impl Function {
         format!("{}({})", self.function_name(), inputs.join(", "))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn call_inlined(&self, inputs: Vec<String>) -> String {
         let mut output = String::new();
         output.push_str("{\n");
@@ -711,10 +713,6 @@ pub(crate) struct TensorInput {
 impl TensorInput {
     fn get_tensor_binding(&self) -> u32 {
         self.start_index
-    }
-
-    pub(crate) fn tensor_binding(&self) -> String {
-        format!("i_{}", self.get_tensor_binding())
     }
 
     fn get_info_binding(&self) -> u32 {
