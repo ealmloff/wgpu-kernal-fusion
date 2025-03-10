@@ -1,5 +1,7 @@
 # WGPU kernel fusion
 
+## ⚠️ Devlopment has moved to https://github.com/floneum/floneum/tree/main/fusor-ml/core
+
 This is a WGPU ML runtime with kernel fusion for ergonomic high performance custom operations. This will hopefully serve as the web and amd runtime for [kalosm](https://crates.io/crates/kalosm) once it is stable enough.
 
 TODO:
